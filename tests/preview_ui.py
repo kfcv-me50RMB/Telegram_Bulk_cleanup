@@ -1,0 +1,173 @@
+"""Offline UI preview using synthetic data, with all account actions disabled.
+
+Run with --output-dir to save window-only screenshots (requires Pillow).
+No config or session files are read, and no Telegram clients are constructed.
+"""
+
+import argparse
+import ctypes
+import sys
+import time
+from ctypes import wintypes
+from pathlib import Path
+from unittest.mock import Mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.append(str(ROOT / ".venv" / "Lib" / "site-packages"))
+import tg_cleanup as module
+
+
+def capture_window(window, path):
+    """Capture this preview HWND directly, never read the user's desktop."""
+    from PIL import Image
+
+    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+    user32.GetDC.argtypes = [wintypes.HWND]
+    user32.GetDC.restype = wintypes.HDC
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+    gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+    gdi32.CreateCompatibleDC.restype = wintypes.HDC
+    gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+    gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+    gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+    gdi32.SelectObject.restype = wintypes.HGDIOBJ
+    gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    gdi32.DeleteDC.argtypes = [wintypes.HDC]
+    gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT, ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
+    hwnd = window.winfo_id()
+    width, height = window.winfo_width(), window.winfo_height()
+    dc = user32.GetDC(hwnd)
+    memory = gdi32.CreateCompatibleDC(dc)
+    bitmap = gdi32.CreateCompatibleBitmap(dc, width, height)
+    old = gdi32.SelectObject(memory, bitmap)
+    try:
+        if not user32.PrintWindow(hwnd, memory, 3):
+            raise RuntimeError("Preview HWND could not be rendered")
+        gdi32.SelectObject(memory, old)
+        # BITMAPINFOHEADER; a negative height produces top-to-bottom pixels.
+        import struct
+        header = ctypes.create_string_buffer(struct.pack("<IiiHHIIiiII", 40, width, -height, 1, 32, 0, width * height * 4, 0, 0, 0, 0))
+        pixels = ctypes.create_string_buffer(width * height * 4)
+        if not gdi32.GetDIBits(memory, bitmap, 0, height, pixels, header, 0):
+            raise RuntimeError("Preview bitmap could not be read")
+        Image.frombytes("RGB", (width, height), pixels.raw, "raw", "BGRX").save(path)
+    finally:
+        gdi32.SelectObject(memory, old)
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(memory)
+        user32.ReleaseDC(hwnd, dc)
+
+
+def preview(output_dir=None):
+    screenshots = []
+    for scale, width, height in ((1, 1000, 760), (1, 860, 640), (1.25, 1000, 760), (1.5, 1000, 760)):
+        root = module.tk.Tk()
+        root.title("离线界面预览 · 模拟数据")
+        root.geometry(f"{width}x{height}+40+40")
+        root.minsize(860, 640)
+        root.tk.call("tk", "scaling", 96 / 72 * scale)
+        app = module.CleanupApp.__new__(module.CleanupApp)
+        app.root = root
+        app.accounts = []
+        app.session_issues = {}
+        app.busy = False
+        app.connected = False
+        for name in ("api_id", "api_hash", "selected_account", "account_text", "group_count", "dialog_count", "contact_count", "status_text"):
+            setattr(app, name, module.tk.StringVar(root, value=""))
+        # Override every business callback before constructing the widgets.
+        for name in ("_login_selected", "_add_account", "_logout_selected", "_confirm_cleanup", "_stop_cleanup", "_credentials_changed", "_account_selection_changed"):
+            setattr(app, name, Mock())
+        app._build_ui()
+        app.api_id.set("123456")
+        app.api_hash.set("DEMO_ONLY_NOT_REAL_CREDENTIALS")
+        root.update()
+        time.sleep(0.1)
+        root.update()
+        for state in ("empty", "connected", "running", "flood", "failed", "stopped", "long_text"):
+            app.accounts = [{"id": "demo", "label": "演示账号 @demo_account", "user_id": "123456789"}] if state != "empty" else []
+            displays = [app._account_display(account) for account in app.accounts]
+            app.account_combo.configure(values=displays)
+            app.selected_account.set(displays[0] if displays else "")
+            app.connected = state in ("connected", "running", "flood")
+            app.account_text.set("尚未连接" if state == "empty" else "演示账号 (@demo_account) [ID: 123456789]")
+            for variable, value in ((app.group_count, "24"), (app.dialog_count, "186"), (app.contact_count, "1250")):
+                variable.set("—" if state == "empty" else value)
+            app.execute_button.configure(state="normal" if state == "connected" else "disabled")
+            app.stop_button.configure(state="normal" if state in ("running", "flood") else "disabled")
+            app._set_busy(state in ("running", "flood"), {"empty": "请选择账号并登录。", "connected": "账号已连接，预览已加载", "running": "正在处理 18/24：退出群组：演示群组", "flood": "限流等待：120 秒；删除私聊及双方记录：演示联系人", "failed": "清理结束：成功 20，失败 2，结果未知 1，未执行 3。请重新连接。", "stopped": "清理已停止，请重新连接", "long_text": "网络请求超时，结果未知。" * 10}[state])
+            expected = "disabled" if state in ("running", "flood") else "normal"
+            assert str(app.add_button["state"]) == expected
+            assert str(app.logout_button["state"]) == expected
+            if state == "long_text":
+                app.account_text.set("这是用于检查换行的很长的账号名称" * 5 + " (@demo_account) [ID: 123456789]")
+            app.log.configure(state="normal")
+            app.log.delete("1.0", "end")
+            app.log.insert("end", "这是一份模拟日志，不涉及真实账号。\n已连接演示账号，清理范围已加载。\n完成：退出群组：演示群组\n失败：删除私聊及双方记录：示例请求被拒绝\n")
+            app.log.configure(state="disabled")
+            root.update()
+            if state == "connected":
+                app.account_combo.event_generate("<Enter>")
+                deadline = time.monotonic() + 0.65
+                while time.monotonic() < deadline:
+                    root.update()
+                    time.sleep(0.01)
+                tips = [widget for widget in root.winfo_children() if isinstance(widget, module.tk.Toplevel)]
+                assert len(tips) == 1
+                assert tips[0].winfo_children()[0]["text"] == displays[0]
+                app.account_combo.event_generate("<Leave>")
+                root.update()
+                assert not tips[0].winfo_exists()
+                # Verify focus and disabled colors are explicit and readable.
+                style = module.ttk.Style(root)
+                assert style.lookup("DangerOutline.TButton", "foreground", ("disabled",)) == "#748397"
+                assert style.lookup("DangerOutline.TButton", "bordercolor", ("focus",)) == app.colors["red_pressed"]
+            if output_dir and state in ("connected", "long_text"):
+                root.lift()
+                root.update()
+                time.sleep(0.15)
+                path = output_dir / f"ui-{width}x{height}-{scale:g}-{state}.png"
+                capture_window(root, path)
+                screenshots.append(path)
+            assert app.execute_button.winfo_ismapped()
+            assert app.stop_button.winfo_ismapped()
+            assert app.log.winfo_height() >= 80
+            # Scroll each panel and confirm that its last controls can actually
+            # be reached within the viewport, not merely exist off-screen.
+            for target in (app.logout_button, app.log):
+                parent = target.master
+                while parent is not None and not isinstance(parent, module.tk.Canvas):
+                    parent = getattr(parent, "master", None)
+                assert parent is not None
+                parent.yview_moveto(1)
+                root.update()
+                top = max(target.winfo_rooty(), parent.winfo_rooty())
+                bottom = min(target.winfo_rooty() + target.winfo_height(), parent.winfo_rooty() + parent.winfo_height())
+                assert bottom - top >= min(target.winfo_height(), 80)
+                parent.yview_moveto(0)
+                root.update()
+        print(f"Preview rendered: {width}x{height}, scaling {scale:g}; log height {app.log.winfo_height()}")
+        if scale == 1 and width == 1000:
+            app._show_details("清理结果", "成功 20，失败 2，结果未知 1，未执行 3", {"success": ["退出群组：演示群组"], "failed": [("演示私聊", "示例请求被拒绝")], "unknown": [("演示联系人", "请求超时")], "unexecuted": ["剩余联系人"], "stop_reason": "用户停止清理"})
+            root.update()
+            if output_dir:
+                window = next(widget for widget in root.winfo_children() if isinstance(widget, module.tk.Toplevel))
+                window.lift()
+                root.update()
+                time.sleep(0.15)
+                path = output_dir / "ui-result.png"
+                capture_window(window, path)
+                screenshots.append(path)
+        root.destroy()
+    for path in screenshots:
+        print(path)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path)
+    args = parser.parse_args()
+    if args.output_dir:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+    preview(args.output_dir)

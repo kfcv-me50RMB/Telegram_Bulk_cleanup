@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.tg_cleanup_config.json*
+*.session
+*.session-journal
+*.session-wal
+*.session-shm
+sessions/
