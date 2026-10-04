@@ -147,8 +147,8 @@ class CleanupApp:
         families = set(tkfont.families(self.root))
         family = "Microsoft YaHei UI" if "Microsoft YaHei UI" in families else tkfont.nametofont("TkDefaultFont").actual("family")
         self.fonts = {
-            "body": (family, 10), "small": (family, 9), "heading": (family, 20, "bold"),
-            "section": (family, 12, "bold"), "metric": (family, 24, "bold"),
+            "body": (family, 10), "small": (family, 9), "heading": (family, 15, "bold"),
+            "section": (family, 12, "bold"), "metric": (family, 16, "bold"),
             "log": ("Consolas" if "Consolas" in families else family, 10),
         }
         self.ui_scale = max(1, float(self.root.tk.call("tk", "scaling")) / (96 / 72))
@@ -174,7 +174,7 @@ class CleanupApp:
         style.configure("Section.TLabel", font=self.fonts["section"])
         style.configure("Muted.TLabel", foreground=c["muted"], font=self.fonts["small"])
         style.configure("Metric.TLabel", foreground=c["blue"], font=self.fonts["metric"])
-        style.configure("Brand.TLabel", background=c["blue"], foreground="white", font=(family, 14, "bold"), padding=(10, 8))
+        style.configure("Brand.TLabel", background=c["blue"], foreground="white", font=(family, 14, "bold"), padding=(8, 5))
         style.configure("Notice.TLabel", foreground="#9D3C3C", font=self.fonts["small"])
         style.configure("TEntry", padding=(10, 6), fieldbackground=c["surface"], foreground=c["text"], bordercolor=c["border"], lightcolor=c["border"], darkcolor=c["border"])
         style.map("TEntry", bordercolor=[("focus", c["blue"])], fieldbackground=[("disabled", "#EDF2F7")], foreground=[("disabled", c["muted"])])
@@ -185,8 +185,17 @@ class CleanupApp:
             ("Primary.TButton", c["blue"], c["blue_hover"], c["blue_pressed"], "white"),
             ("Danger.TButton", c["red"], c["red_hover"], c["red_pressed"], "white"),
         ):
-            style.configure(name, font=self.fonts["body"], padding=(12, 7), background=color, foreground=foreground, bordercolor=c["border"] if name == "TButton" else color, borderwidth=1, focusthickness=2, focuscolor=c["blue"])
+            style.configure(name, font=self.fonts["body"], padding=(10, 5), background=color, foreground=foreground, bordercolor=c["border"] if name == "TButton" else color, borderwidth=1, focusthickness=2, focuscolor=c["blue"])
             style.map(name, background=[("disabled", "#E9EEF4"), ("pressed", pressed), ("active", hover)], foreground=[("disabled", "#748397")], bordercolor=[("disabled", c["border"]), ("focus", c["blue"])])
+        style.configure("TNotebook", background=c["surface"], borderwidth=0, tabmargins=(0, 0, 0, 6))
+        style.configure("TNotebook.Tab", background="#EDF2F8", foreground=c["muted"], padding=(10, 3), font=self.fonts["small"], borderwidth=0)
+        style.map("TNotebook.Tab", background=[("selected", "#E3F2FC"), ("active", "#EAF0F7")], foreground=[("selected", "#1379AD"), ("active", c["text"])])
+        style.configure("Treeview", background=c["surface"], fieldbackground=c["surface"], foreground=c["text"], font=self.fonts["body"], rowheight=int(28 * self.ui_scale), borderwidth=0)
+        style.configure("Treeview.Heading", background="#EDF3F9", foreground=c["muted"], font=self.fonts["small"], padding=(8, 3), relief="flat")
+        style.map("Treeview", background=[("selected", "#DCEFFC")], foreground=[("disabled", c["muted"]), ("selected", c["text"])])
+        style.map("Treeview.Heading", background=[("active", "#E3EDF7")])
+        style.configure("Horizontal.TScrollbar", background="#D7E1ED", troughcolor=c["surface"], bordercolor=c["surface"], arrowcolor=c["muted"])
+        style.configure("Secondary.TButton", font=self.fonts["small"], padding=(10, 4))
         style.configure("Vertical.TScrollbar", background="#D7E1ED", troughcolor=c["surface"], bordercolor=c["surface"], arrowcolor=c["muted"])
         style.configure("DangerOutline.TButton", background=c["surface"], foreground=c["red"], bordercolor=c["red"], focuscolor=c["red"])
         style.map("DangerOutline.TButton", background=[("disabled", "#E9EEF4"), ("pressed", "#FADDDD"), ("active", "#FFF0F0")], foreground=[("disabled", "#748397"), ("!disabled", c["red"])], bordercolor=[("disabled", c["border"]), ("focus", c["red_pressed"]), ("!disabled", c["red"])])
@@ -229,9 +238,9 @@ class CleanupApp:
             self.account_combo.bind(event, hide, add="+")
 
     def _card(self, parent, title):
-        card = ttk.Frame(parent, style="Card.TFrame", padding=12)
+        card = ttk.Frame(parent, style="Card.TFrame", padding=8)
         card.columnconfigure(0, weight=1)
-        ttk.Label(card, text=title, style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(card, text=title, style="Section.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
         return card
 
     def _text_options(self):
@@ -271,7 +280,7 @@ class CleanupApp:
 
         def scroll(event):
             widget = event.widget
-            if widget.winfo_class() in ("TCombobox", "Text"):
+            if widget.winfo_class() in ("TCombobox", "Text", "Treeview"):
                 return
             while widget is not None:
                 if widget is shell:
@@ -289,23 +298,23 @@ class CleanupApp:
 
     def _build_ui(self):
         self._configure_styles()
-        container = ttk.Frame(self.root, padding=16)
+        container = ttk.Frame(self.root, padding=10)
         container.pack(fill="both", expand=True)
         container.columnconfigure(0, weight=1)
         container.rowconfigure(1, weight=1)
 
         header = ttk.Frame(container)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         ttk.Label(header, text="TG", style="Brand.TLabel").grid(row=0, column=0, rowspan=2, padx=(0, 14))
         ttk.Label(header, text="Telegram 批量清理", style="Title.TLabel").grid(row=0, column=1, sticky="w")
         ttk.Label(header, text="管理账号 · 预览范围 · 确认后清理", style="Subtitle.TLabel").grid(row=1, column=1, sticky="w", pady=(4, 0))
 
         body = ttk.Frame(container)
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, minsize=int(280 * self.ui_scale) + 12)
+        body.columnconfigure(0, minsize=int(240 * min(self.ui_scale, 1.15)) + 12)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
-        sidebar_shell, sidebar = self._scrollable_panel(body, int(280 * self.ui_scale))
+        sidebar_shell, sidebar = self._scrollable_panel(body, int(240 * min(self.ui_scale, 1.15)))
         sidebar_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         sidebar.columnconfigure(0, weight=1)
 
@@ -340,62 +349,58 @@ class CleanupApp:
         self.logout_button = ttk.Button(account_actions, text="退出登录", style="DangerOutline.TButton", command=self._logout_selected)
         self.logout_button.grid(row=1, column=0, columnspan=2, sticky="ew")
 
-        workspace_shell, workspace = self._scrollable_panel(body, 1)
-        workspace_shell.grid(row=0, column=1, sticky="nsew")
+        workspace = ttk.Frame(body)
+        workspace.grid(row=0, column=1, sticky="nsew")
         workspace.columnconfigure(0, weight=1)
-        workspace.rowconfigure(1, weight=1)
-        summary = self._card(workspace, "清理预览")
-        summary.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        ttk.Label(summary, text="当前账号", style="Muted.TLabel").grid(row=1, column=0, sticky="w")
-        account_label = ttk.Label(summary, textvariable=self.account_text, wraplength=480, justify="left")
-        account_label.grid(row=2, column=0, sticky="ew", pady=(4, 8))
-        self._wrap_to_width(account_label, summary, 24)
+        workspace.rowconfigure(1, weight=1, minsize=int(166 + 60 * (self.ui_scale - 1)))
+        workspace.rowconfigure(2, minsize=108)
+        summary = ttk.Frame(workspace, style="Card.TFrame", padding=6)
+        summary.columnconfigure(0, weight=1)
+        summary.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        account_label = ttk.Label(summary, textvariable=self.account_text, width=1, anchor="w")
+        account_label.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         metrics = ttk.Frame(summary, style="Surface.TFrame")
-        metrics.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        for column, (label, variable, description) in enumerate((
-            ("群组 / 频道", self.group_count, "将退出"),
-            ("用户私聊", self.dialog_count, "将双向删除对话"),
-            ("联系人", self.contact_count, "将移除"),
-        )):
+        metrics.grid(row=1, column=0, sticky="ew")
+        for column, (label, variable) in enumerate((("群组 / 频道", self.group_count), ("用户私聊", self.dialog_count), ("联系人", self.contact_count))):
             metrics.columnconfigure(column, weight=1, uniform="metrics")
-            tile = ttk.Frame(metrics, style="Card.TFrame", padding=(10, 8))
-            tile.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 4, 0 if column == 2 else 4))
-            caption = ttk.Label(tile, text=label, style="Muted.TLabel", wraplength=140)
-            caption.pack(anchor="w", fill="x")
+            tile = ttk.Frame(metrics, style="Surface.TFrame", padding=(4, 0))
+            tile.grid(row=0, column=column, sticky="ew")
+            ttk.Label(tile, text=label + " · 已选 / 总数", style="Muted.TLabel").pack(anchor="w")
             metric_font = tkfont.Font(root=self.root, font=self.fonts["metric"])
             reference_font = tkfont.Font(root=self.root, font=self.fonts["metric"])
-            ttk.Label(tile, textvariable=variable, style="Metric.TLabel", font=metric_font).pack(anchor="w", pady=(4, 0))
-            detail = ttk.Label(tile, text=description, style="Muted.TLabel", wraplength=140)
-            detail.pack(anchor="w", fill="x")
-            self._wrap_to_width(caption, tile, 24)
-            self._wrap_to_width(detail, tile, 24)
-
+            ttk.Label(tile, textvariable=variable, style="Metric.TLabel", font=metric_font).pack(anchor="w")
             def fit_metric(event=None, tile=tile, variable=variable, font=metric_font, reference=reference_font):
-                available = max(1, tile.winfo_width() - 26)
+                available = max(1, tile.winfo_width() - 8)
                 measured = max(1, reference.measure(variable.get()))
-                font.configure(size=max(14, min(24, int(24 * available / measured))))
-
+                font.configure(size=max(10, min(16, int(16 * available / measured))))
             tile.bind("<Configure>", fit_metric, add="+")
             variable.trace_add("write", lambda *_args, fit=fit_metric: fit())
 
-        notebook = ttk.Notebook(summary)
-        notebook.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        selection = ttk.Frame(workspace, style="Card.TFrame", padding=8)
+        selection.grid(row=1, column=0, sticky="nsew", pady=(0, 6))
+        selection.columnconfigure(0, weight=1)
+        selection.rowconfigure(0, weight=1)
+        notebook = ttk.Notebook(selection)
+        notebook.grid(row=0, column=0, sticky="nsew")
         self.selection_trees = {}
         self.selection_buttons = []
         for category, caption in (("private", "用户私聊"), ("groups", "群组 / 频道"), ("contacts", "联系人")):
-            page = ttk.Frame(notebook)
+            page = ttk.Frame(notebook, style="Surface.TFrame")
             notebook.add(page, text=caption)
             page.columnconfigure(0, weight=1)
-            toolbar = ttk.Frame(page)
+            page.rowconfigure(1, weight=1)
+            toolbar = ttk.Frame(page, style="Surface.TFrame")
             toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
             for label, checked in (("全选", True), ("取消全选", False)):
-                button = ttk.Button(toolbar, text=label, command=lambda c=category, v=checked: self._select_category(c, v))
-                button.pack(side="left", padx=3, pady=4)
+                button = ttk.Button(toolbar, text=label, style="Secondary.TButton", command=lambda c=category, v=checked: self._select_category(c, v))
+                button.pack(side="left", padx=3, pady=2)
                 self.selection_buttons.append(button)
-            tree = ttk.Treeview(page, columns=("checked", "name", "username", "id"), show="headings", height=5, selectmode="browse")
+            tree = ttk.Treeview(page, columns=("checked", "name", "username", "id"), show="headings", height=1, selectmode="browse")
             for column, title, width in (("checked", "勾选", 48), ("name", "名称", 190), ("username", "用户名", 120), ("id", "Telegram ID", 110)):
                 tree.heading(column, text=title)
                 tree.column(column, width=width, minwidth=width if column == "checked" else 60, stretch=column != "checked")
+            tree.tag_configure("even", background="#FFFFFF")
+            tree.tag_configure("odd", background="#F5F8FC")
             tree.grid(row=1, column=0, sticky="nsew")
             scrollbar = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
             scrollbar.grid(row=1, column=1, sticky="ns")
@@ -406,32 +411,36 @@ class CleanupApp:
             tree.bind("<space>", lambda event, c=category: self._selection_space(c))
             self.selection_trees[category] = tree
 
-        actions = ttk.Frame(summary, style="Surface.TFrame")
-        actions.grid(row=5, column=0, sticky="ew")
+        log_frame = ttk.Frame(workspace, style="Card.TFrame", padding=6)
+        log_frame.columnconfigure(0, weight=1)
+        ttk.Label(log_frame, text="运行日志", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 3))
+        log_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 6))
+        log_frame.rowconfigure(1, weight=1, minsize=80)
+        self.log = ScrolledText(log_frame, height=1, width=1, state="disabled", wrap="word", **self._text_options())
+        self.log.grid(row=1, column=0, sticky="nsew")
+
+        footer = ttk.Frame(workspace, style="Card.TFrame", padding=6)
+        footer.grid(row=3, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        actions = ttk.Frame(footer, style="Surface.TFrame")
+        actions.grid(row=0, column=0, sticky="ew")
         self.execute_button = ttk.Button(actions, text="清理已选项目", style="Danger.TButton", command=self._confirm_cleanup, state="disabled")
         self.execute_button.pack(side="left")
         self.stop_button = ttk.Button(actions, text="停止清理", command=self._stop_cleanup, state="disabled")
         self.stop_button.pack(side="left", padx=(8, 0))
-        safety_note = ttk.Label(summary, text="清理需两次确认。将双向删除私聊记录（包括对方记录），并从当前账号列表移除对话。", style="Notice.TLabel", wraplength=480, justify="left")
-        safety_note.grid(row=6, column=0, sticky="ew", pady=(8, 0))
-        self._wrap_to_width(safety_note, summary, 24)
-        scope_note = ttk.Label(summary, text="Saved Messages 不参与清理；新消息可能使对话重新出现。", style="Muted.TLabel", justify="left")
-        scope_note.grid(row=7, column=0, sticky="ew", pady=(4, 0))
-        self._wrap_to_width(scope_note, summary, 24)
+        self.safety_note = safety_note = ttk.Label(footer, text="清理需两次确认。将双向删除私聊记录（包括对方记录），并从当前账号列表移除对话。", style="Notice.TLabel", wraplength=480, justify="left")
+        safety_note.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self._wrap_to_width(safety_note, footer, 24)
+        self.scope_note = scope_note = ttk.Label(footer, text="Saved Messages 不参与清理；新消息可能使对话重新出现。", style="Muted.TLabel", justify="left")
+        scope_note.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        self._wrap_to_width(scope_note, footer, 24)
 
-        log_frame = self._card(workspace, "运行日志")
-        log_frame.grid(row=1, column=0, sticky="nsew")
-        log_frame.rowconfigure(1, weight=1, minsize=80)
-        self.log = ScrolledText(log_frame, height=3, width=1, state="disabled", wrap="word", **self._text_options())
-        self.log.grid(row=1, column=0, sticky="nsew")
-
-        status = ttk.Frame(container, style="Card.TFrame", padding=(14, 10))
-        status.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        status = ttk.Frame(container, style="Card.TFrame", padding=(10, 5))
+        status.grid(row=2, column=0, sticky="ew", pady=(6, 0))
         status.columnconfigure(1, weight=1)
         ttk.Label(status, text="任务状态", style="Muted.TLabel").grid(row=0, column=0, sticky="nw", padx=(0, 14))
-        status_label = ttk.Label(status, textvariable=self.status_text, wraplength=780, justify="left")
+        status_label = ttk.Label(status, textvariable=self.status_text, width=1, anchor="w")
         status_label.grid(row=0, column=1, sticky="ew")
-        self._wrap_to_width(status_label, status, 110)
 
     def _run_event_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -745,7 +754,7 @@ class CleanupApp:
                 self.selection_rows[key] = item
                 name = getattr(entity, "title", None) or " ".join(v for v in (getattr(entity, "first_name", None), getattr(entity, "last_name", None)) if v) or str(entity.id)
                 tree = self.selection_trees[category]
-                tree.insert("", "end", iid=str(peer_id), values=("☐", name, "@" + entity.username if getattr(entity, "username", None) else "—", str(peer_id)))
+                tree.insert("", "end", iid=str(peer_id), tags=("odd" if len(tree.get_children()) % 2 else "even",), values=("☐", name, "@" + entity.username if getattr(entity, "username", None) else "—", str(peer_id)))
         self._refresh_selection()
 
     def _refresh_selection(self):

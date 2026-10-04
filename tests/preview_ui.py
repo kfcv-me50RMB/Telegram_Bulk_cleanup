@@ -121,6 +121,7 @@ def preview(output_dir=None):
                 tree = app.selection_trees["private"]
                 box = tree.bbox("1", "checked")
                 assert box
+                assert box[1] + box[3] <= tree.winfo_height()
                 x, y, w, h = box
                 app._selection_click("private", SimpleNamespace(x=x + w // 2, y=y + h // 2))
                 assert ("private", 1) not in app.selected_items
@@ -167,6 +168,8 @@ def preview(output_dir=None):
                 style = module.ttk.Style(root)
                 assert style.lookup("DangerOutline.TButton", "foreground", ("disabled",)) == "#748397"
                 assert style.lookup("DangerOutline.TButton", "bordercolor", ("focus",)) == app.colors["red_pressed"]
+            root.update_idletasks()
+            root.update()
             if output_dir and state in ("connected", "long_text"):
                 root.lift()
                 root.update()
@@ -177,9 +180,23 @@ def preview(output_dir=None):
             assert app.execute_button.winfo_ismapped()
             assert app.stop_button.winfo_ismapped()
             assert app.log.winfo_height() >= 80
+            for target in (app.execute_button, app.stop_button, app.safety_note, app.scope_note, app.log):
+                parent = target.master
+                while parent is not root:
+                    assert target.winfo_rooty() >= parent.winfo_rooty()
+                    assert target.winfo_rooty() + target.winfo_height() <= parent.winfo_rooty() + parent.winfo_height()
+                    parent = parent.master
+                assert target.winfo_rooty() >= root.winfo_rooty()
+                assert target.winfo_rooty() + target.winfo_height() <= root.winfo_rooty() + root.winfo_height()
+            for tree in app.selection_trees.values():
+                if tree.winfo_ismapped():
+                    assert tree.winfo_height() >= int(28 * app.ui_scale) + 24
+            app.selection_trees["private"].yview_moveto(1)
+            root.update()
+            app.selection_trees["private"].yview_moveto(0)
             # Scroll each panel and confirm that its last controls can actually
             # be reached within the viewport, not merely exist off-screen.
-            for target in (app.logout_button, app.log):
+            for target in (app.logout_button,):
                 parent = target.master
                 while parent is not None and not isinstance(parent, module.tk.Canvas):
                     parent = getattr(parent, "master", None)
