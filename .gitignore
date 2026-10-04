@@ -7,3 +7,8 @@ __pycache__/
 *.session-wal
 *.session-shm
 sessions/
+
+build/
+dist/
+*.spec
+.build-venv/

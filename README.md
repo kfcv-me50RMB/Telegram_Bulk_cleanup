@@ -146,3 +146,9 @@ python -m venv .venv
 ```
 
 如安装了 Pillow 等额外验证工具，`pip freeze` 也会导出它们；更新运行依赖清单时应使用仅安装运行依赖的环境。
+
+## Windows EXE（无需 Python）
+
+将 `dist/TelegramCleanup.exe` 复制到有写入权限的文件夹，双击运行，无需安装 Python。配置文件 `.tg_cleanup_config.json` 和 `sessions/` 会保存在 EXE 所在目录，升级时替换 EXE 即可。分发时仅发送 EXE，不要发送自己的配置或会话文件。
+
+重新打包：安装 Python 后执行 `build_exe.bat`。脚本会创建独立的 `.build-venv` 环境并安装固定的应用依赖与 PyInstaller，然后生成 EXE。首次打包需要联网下载依赖。

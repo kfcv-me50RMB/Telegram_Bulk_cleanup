@@ -5,6 +5,7 @@ import ctypes
 import json
 import queue
 import sqlite3
+import sys
 import threading
 import time
 import tkinter as tk
@@ -31,7 +32,7 @@ from telethon.tl.functions.messages import DeleteHistoryRequest
 from telethon.tl.types import Channel, Chat, User
 
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / ".tg_cleanup_config.json"
 LEGACY_SESSION_PATH = BASE_DIR / "tg_cleanup_session"
 SESSIONS_DIR = BASE_DIR / "sessions"
