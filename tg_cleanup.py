@@ -11,6 +11,7 @@ import time
 import tkinter as tk
 import uuid
 from concurrent.futures import Future
+from dataclasses import dataclass
 from ctypes import wintypes
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
@@ -18,6 +19,7 @@ from tkinter import font as tkfont
 from tkinter.scrolledtext import ScrolledText
 
 from telethon import TelegramClient
+from telethon.utils import get_peer_id
 from telethon.errors import (
     FloodWaitError,
     PasswordHashInvalidError,
@@ -39,6 +41,14 @@ SESSIONS_DIR = BASE_DIR / "sessions"
 INSTANCE_MUTEX_NAME = "Local\\TelegramCleanupGUI_8D634395"
 CLEANUP_TIMEOUT = 60
 MAX_FLOOD_WAIT = 300
+
+
+@dataclass(frozen=True)
+class CleanupSelection:
+    account_id: str
+    groups: tuple
+    private_users: tuple
+    contacts: tuple
 
 
 class CleanupStopped(RuntimeError):
@@ -94,6 +104,10 @@ class CleanupApp:
         self.groups = []
         self.private_users = []
         self.contacts = []
+        self.selected_items = set()
+        self.selection_rows = {}
+        self.selection_trees = {}
+        self.selection_buttons = []
         self.accounts = []
         self.session_issues = {}
         self.busy = False
@@ -364,17 +378,45 @@ class CleanupApp:
             tile.bind("<Configure>", fit_metric, add="+")
             variable.trace_add("write", lambda *_args, fit=fit_metric: fit())
 
+        notebook = ttk.Notebook(summary)
+        notebook.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        self.selection_trees = {}
+        self.selection_buttons = []
+        for category, caption in (("private", "用户私聊"), ("groups", "群组 / 频道"), ("contacts", "联系人")):
+            page = ttk.Frame(notebook)
+            notebook.add(page, text=caption)
+            page.columnconfigure(0, weight=1)
+            toolbar = ttk.Frame(page)
+            toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
+            for label, checked in (("全选", True), ("取消全选", False)):
+                button = ttk.Button(toolbar, text=label, command=lambda c=category, v=checked: self._select_category(c, v))
+                button.pack(side="left", padx=3, pady=4)
+                self.selection_buttons.append(button)
+            tree = ttk.Treeview(page, columns=("checked", "name", "username", "id"), show="headings", height=5, selectmode="browse")
+            for column, title, width in (("checked", "勾选", 48), ("name", "名称", 190), ("username", "用户名", 120), ("id", "Telegram ID", 110)):
+                tree.heading(column, text=title)
+                tree.column(column, width=width, minwidth=width if column == "checked" else 60, stretch=column != "checked")
+            tree.grid(row=1, column=0, sticky="nsew")
+            scrollbar = ttk.Scrollbar(page, orient="vertical", command=tree.yview)
+            scrollbar.grid(row=1, column=1, sticky="ns")
+            horizontal = ttk.Scrollbar(page, orient="horizontal", command=tree.xview)
+            horizontal.grid(row=2, column=0, sticky="ew")
+            tree.configure(yscrollcommand=scrollbar.set, xscrollcommand=horizontal.set)
+            tree.bind("<Button-1>", lambda event, c=category: self._selection_click(c, event))
+            tree.bind("<space>", lambda event, c=category: self._selection_space(c))
+            self.selection_trees[category] = tree
+
         actions = ttk.Frame(summary, style="Surface.TFrame")
-        actions.grid(row=4, column=0, sticky="ew")
-        self.execute_button = ttk.Button(actions, text="执行批量清理", style="Danger.TButton", command=self._confirm_cleanup, state="disabled")
+        actions.grid(row=5, column=0, sticky="ew")
+        self.execute_button = ttk.Button(actions, text="清理已选项目", style="Danger.TButton", command=self._confirm_cleanup, state="disabled")
         self.execute_button.pack(side="left")
         self.stop_button = ttk.Button(actions, text="停止清理", command=self._stop_cleanup, state="disabled")
         self.stop_button.pack(side="left", padx=(8, 0))
         safety_note = ttk.Label(summary, text="清理需两次确认。将双向删除私聊记录（包括对方记录），并从当前账号列表移除对话。", style="Notice.TLabel", wraplength=480, justify="left")
-        safety_note.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        safety_note.grid(row=6, column=0, sticky="ew", pady=(8, 0))
         self._wrap_to_width(safety_note, summary, 24)
         scope_note = ttk.Label(summary, text="Saved Messages 不参与清理；新消息可能使对话重新出现。", style="Muted.TLabel", justify="left")
-        scope_note.grid(row=6, column=0, sticky="ew", pady=(4, 0))
+        scope_note.grid(row=7, column=0, sticky="ew", pady=(4, 0))
         self._wrap_to_width(scope_note, summary, 24)
 
         log_frame = self._card(workspace, "运行日志")
@@ -670,16 +712,99 @@ class CleanupApp:
         self.api_hash_entry.configure(state=credentials_state)
         self.account_combo.configure(state=readonly_state)
         self._update_account_buttons()
+        for button in getattr(self, "selection_buttons", []):
+            button.configure(state="normal" if self._selection_available() else "disabled")
+        for tree in getattr(self, "selection_trees", {}).values():
+            tree.state(["!disabled"] if self._selection_available() else ["disabled"])
         if busy:
             self.execute_button.configure(state="disabled")
 
+    def _selection_available(self):
+        account = self._selected_account()
+        return bool(not self.busy and self.preview_loaded and self.connected
+                    and account and account["id"] == self.current_account_id)
+
+    def _reset_selection(self):
+        self.selected_items = set()
+        self.selection_rows = {}
+        for tree in getattr(self, "selection_trees", {}).values():
+            tree.delete(*tree.get_children())
+
+    def _populate_selection(self):
+        self._reset_selection()
+        categories = (("private", self.private_users), ("groups", self.groups), ("contacts", self.contacts))
+        for category, items in categories:
+            for item in items:
+                entity = item[0].entity if category == "groups" else item.entity if category == "private" else item
+                if isinstance(entity, User) and entity.is_self:
+                    continue
+                peer_id = get_peer_id(entity)
+                key = (category, peer_id)
+                if key in self.selection_rows:
+                    continue
+                self.selection_rows[key] = item
+                name = getattr(entity, "title", None) or " ".join(v for v in (getattr(entity, "first_name", None), getattr(entity, "last_name", None)) if v) or str(entity.id)
+                tree = self.selection_trees[category]
+                tree.insert("", "end", iid=str(peer_id), values=("☐", name, "@" + entity.username if getattr(entity, "username", None) else "—", str(peer_id)))
+        self._refresh_selection()
+
+    def _refresh_selection(self):
+        for category, variable in (("groups", self.group_count), ("private", self.dialog_count), ("contacts", self.contact_count)):
+            keys = [key for key in self.selection_rows if key[0] == category]
+            variable.set(f"{sum(key in self.selected_items for key in keys)} / {len(keys)}")
+            tree = self.selection_trees.get(category)
+            if tree:
+                for key in keys:
+                    tree.set(str(key[1]), "checked", "☑" if key in self.selected_items else "☐")
+        self._update_execute_state()
+
+    def _toggle_selection(self, key):
+        if not self._selection_available() or key not in self.selection_rows:
+            return
+        if key in self.selected_items:
+            self.selected_items.remove(key)
+        else:
+            self.selected_items.add(key)
+        self._refresh_selection()
+
+    def _select_category(self, category, checked):
+        if not self._selection_available():
+            return
+        keys = {key for key in self.selection_rows if key[0] == category}
+        if checked:
+            self.selected_items.update(keys)
+        else:
+            self.selected_items.difference_update(keys)
+        self._refresh_selection()
+
+    def _selection_click(self, category, event):
+        tree = self.selection_trees[category]
+        row = tree.identify_row(event.y)
+        if row and tree.identify_region(event.x, event.y) == "cell" and tree.identify_column(event.x) == "#1":
+            tree.focus(row)
+            tree.selection_set(row)
+            self._toggle_selection((category, int(row)))
+            return "break"
+
+    def _selection_space(self, category):
+        row = self.selection_trees[category].focus()
+        if row:
+            self._toggle_selection((category, int(row)))
+        return "break"
+
+    def _selection_snapshot(self):
+        def items(category):
+            return tuple(item for key, item in self.selection_rows.items() if key[0] == category and key in self.selected_items)
+        return CleanupSelection(self.current_account_id, items("groups"), items("private"), items("contacts"))
+
     def _clear_preview(self, account_text="尚未连接"):
         self.preview_loaded = False
+        self._reset_selection()
         self.account_text.set(account_text)
         self.group_count.set("—")
         self.dialog_count.set("—")
         self.contact_count.set("—")
-        self.execute_button.configure(state="disabled")
+        self._update_execute_state()
 
     def _credentials_changed(self, _event=None):
         self._clear_preview("连接凭据已更改")
@@ -714,7 +839,7 @@ class CleanupApp:
 
     def _update_execute_state(self):
         selected = self._selected_account()
-        total = len(self.groups) + len(self.private_users) + len(self.contacts)
+        total = len(self.selected_items)
         enabled = bool(
             not self.busy
             and self.preview_loaded
@@ -724,6 +849,10 @@ class CleanupApp:
             and self.connected
         )
         self.execute_button.configure(state="normal" if enabled else "disabled")
+        for button in getattr(self, "selection_buttons", []):
+            button.configure(state="normal" if self._selection_available() else "disabled")
+        for tree in getattr(self, "selection_trees", {}).values():
+            tree.state(["!disabled"] if self._selection_available() else ["disabled"])
 
     def _submit(self, coroutine, on_success, operation_name, on_error=None):
         async def tracked_operation():
@@ -927,6 +1056,10 @@ class CleanupApp:
         self.group_count.set(str(result["groups"]) if self.preview_loaded else "—")
         self.dialog_count.set(str(result["dialogs"]) if self.preview_loaded else "—")
         self.contact_count.set(str(result["contacts"]) if self.preview_loaded else "—")
+        if self.preview_loaded:
+            self._populate_selection()
+        else:
+            self._reset_selection()
         total = result["groups"] + result["dialogs"] + result["contacts"]
         self.status_text.set("账号已连接，预览已加载" if self.preview_loaded else "账号已保存，但预览加载失败")
         self._set_busy(False, self.status_text.get())
@@ -1223,6 +1356,8 @@ class CleanupApp:
         }
 
     def _confirm_cleanup(self):
+        if self.busy:
+            return
         selected = self._selected_account()
         if (
             not self.preview_loaded
@@ -1233,24 +1368,28 @@ class CleanupApp:
             messagebox.showwarning("预览已失效", "请重新连接目标账号并加载清理预览。")
             self._update_execute_state()
             return
+        snapshot = self._selection_snapshot()
+        if not (snapshot.groups or snapshot.private_users or snapshot.contacts):
+            messagebox.showwarning("未选择项目", "请勾选要清理的项目。")
+            return
+        counts = f"将退出 {len(snapshot.groups)} 个群组/频道、删除 {len(snapshot.private_users)} 个私聊及双方记录，并移除 {len(snapshot.contacts)} 个联系人。"
         first = messagebox.askyesno(
             "确认批量清理",
             f"目标账号：{self._account_display(selected)}\n\n"
-            f"将退出 {self.group_count.get()} 个群组/频道、删除 {self.dialog_count.get()} 个私聊及双方记录，"
-            f"并移除 {self.contact_count.get()} 个联系人。\n\n"
-            "私聊删除将同时删除对方聊天记录，并从当前账号列表移除对话。\n不会处理 Saved Messages。\n\n是否继续？",
+            + counts + "\n\n" +
+            "私聊删除将同时删除对方聊天记录，并从当前账号列表移除对话。\n不会处理 Saved Messages。\n此操作无法撤销。\n\n是否继续？",
             icon="warning",
         )
         if not first:
             return
-        if not messagebox.askyesno("最终确认", f"目标账号：{self._account_display(selected)}\n\n将删除私聊及双方记录，包括对方聊天记录，并从当前账号列表移除对话。\n此操作无法撤销。确定立即执行全部清理吗？", icon="warning"):
+        if not messagebox.askyesno("最终确认", f"目标账号：{self._account_display(selected)}\n\n{counts}\n\n将删除私聊及双方记录，包括对方聊天记录，并从当前账号列表移除对话。\n此操作无法撤销。确定立即清理已选项目吗？", icon="warning"):
             return
         self.preview_loaded = False
         self.cleanup_running = True
         self.stop_button.configure(state="normal")
         self._set_busy(True, "正在执行清理……")
         self._log("已完成两次确认，开始执行批量清理。")
-        self._submit(self._cleanup(), self._cleanup_finished, "批量清理")
+        self._submit(self._cleanup(snapshot), self._cleanup_finished, "批量清理")
 
     def _stop_cleanup(self):
         if not self.cleanup_running:
@@ -1295,29 +1434,29 @@ class CleanupApp:
                 return
             flood_state["partial"] = True
 
-    async def _cleanup(self):
+    async def _cleanup(self, snapshot):
         client = self.client
         result = {"success": [], "failed": [], "unknown": [], "unexecuted": [], "stop_reason": None, "disconnect_error": None}
         operations = []
-        for dialog, kind in tuple(self.groups):
+        for dialog, kind in snapshot.groups:
             entity = dialog.entity
             title = getattr(entity, "title", str(entity.id))
             factory = ((lambda entity=entity: client(LeaveChannelRequest(entity)))
                        if isinstance(entity, Channel)
                        else (lambda entity=entity: client.delete_dialog(entity)))
             operations.append((f"退出{kind}：{title}", factory, None))
-        for dialog in tuple(self.private_users):
+        for dialog in snapshot.private_users:
             entity = dialog.entity
             if entity.is_self:
                 continue
             name = " ".join(value for value in (entity.first_name, entity.last_name) if value) or str(entity.id)
             operations.append((f"删除私聊及双方记录：{name}", None, entity))
-        contacts = tuple(self.contacts)
+        contacts = snapshot.contacts
         if contacts:
             operations.append((f"移除联系人（{len(contacts)} 人）", lambda: client(DeleteContactsRequest(id=list(contacts))), None))
         self.cleanup_task = asyncio.current_task()
         try:
-            if not client or not client.is_connected():
+            if snapshot.account_id != self.current_account_id or not client or not client.is_connected():
                 result["stop_reason"] = "Telegram 连接已断开，请重新加载预览。"
                 result["unexecuted"] = [label for label, _, _ in operations]
             else:
@@ -1359,6 +1498,7 @@ class CleanupApp:
         return result
 
     def _cleanup_finished(self, result):
+        self._reset_selection()
         self.cleanup_running = False
         self.connected = False
         self.stop_button.configure(state="disabled")

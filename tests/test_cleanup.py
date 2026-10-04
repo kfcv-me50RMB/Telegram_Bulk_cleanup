@@ -87,6 +87,9 @@ def make_app(client=None):
     app.groups = []
     app.private_users = []
     app.contacts = []
+    app.selected_items = set()
+    app.selection_rows = {}
+    app.selection_trees = {}
     app.accounts = []
     app.current_account_id = "account"
     app.cleanup_task = None
@@ -109,12 +112,145 @@ def dialog(user_id, **kwargs):
     return SimpleNamespace(entity=User(id=user_id, first_name="Test", **kwargs))
 
 
+class SelectionTests(unittest.IsolatedAsyncioTestCase):
+    def selected_app(self):
+        app = make_app()
+        app.busy = False
+        app.preview_loaded = True
+        app.connected = True
+        app._selected_account = lambda: {"id": "account"}
+        app.execute_button = Mock()
+        for name in ("group_count", "dialog_count", "contact_count"):
+            setattr(app, name, Mock())
+        app.selection_rows = {("private", 2): dialog(2), ("private", 3): dialog(3),
+                              ("contacts", 2): User(id=2, first_name="Test")}
+        return app
+
+    async def test_default_empty_and_category_selection_independent(self):
+        app = self.selected_app()
+        app._update_execute_state()
+        app.execute_button.configure.assert_called_with(state="disabled")
+        app._toggle_selection(("private", 2))
+        app.execute_button.configure.assert_called_with(state="normal")
+        self.assertEqual(app.selected_items, {("private", 2)})
+        app._select_category("private", True)
+        self.assertEqual(app.selected_items, {("private", 2), ("private", 3)})
+        app._select_category("contacts", True)
+        app._select_category("private", False)
+        self.assertEqual(app.selected_items, {("contacts", 2)})
+        app._toggle_selection(("contacts", 2))
+        self.assertFalse(app.selected_items)
+
+    async def test_invalid_preview_busy_or_other_account_cannot_select(self):
+        app = self.selected_app()
+        for name in ("busy", "preview_loaded", "connected"):
+            old = getattr(app, name)
+            setattr(app, name, name == "busy")
+            app._select_category("private", True)
+            app._toggle_selection(("private", 2))
+            self.assertFalse(app.selected_items)
+            setattr(app, name, old)
+        app._selected_account = lambda: {"id": "other"}
+        app._select_category("private", True)
+        self.assertFalse(app.selected_items)
+
+    async def test_snapshot_is_fixed_and_executes_only_selected_requests(self):
+        from telethon.tl.functions.contacts import DeleteContactsRequest
+        app = self.selected_app()
+        client = FakeClient()
+        app.client = client
+        app.clients = {client}
+        app._toggle_selection(("private", 3))
+        app._select_category("contacts", True)
+        snapshot = app._selection_snapshot()
+        app._select_category("private", True)
+        app._select_category("contacts", False)
+        app.private_users = [dialog(99)]
+        result = await app._cleanup(snapshot)
+        self.assertEqual(len(result["success"]), 2)
+        self.assertEqual([r.peer.id for r in client.requests if isinstance(r, DeleteHistoryRequest)], [3])
+        self.assertEqual([u.id for r in client.requests if isinstance(r, DeleteContactsRequest) for u in r.id], [2])
+        self.assertFalse(result["unexecuted"])
+        with self.assertRaises(AttributeError):
+            snapshot.account_id = "other"
+
+    async def test_populate_distinguishes_group_peer_types_and_excludes_self(self):
+        from telethon.tl.types import Channel
+        app = self.selected_app()
+        app.groups = [(SimpleNamespace(entity=Chat(id=7, title="Same", photo=None, participants_count=0, date=None, version=0)), "群组"),
+                      (SimpleNamespace(entity=Channel(id=7, title="Same", photo=None, date=None)), "频道")]
+        app.private_users = [dialog(2), dialog(3), dialog(1, is_self=True)]
+        app.contacts = [User(id=2, first_name="Test")]
+        app.selection_trees = {category: Mock() for category in ("groups", "private", "contacts")}
+        for tree in app.selection_trees.values():
+            tree.get_children.return_value = ()
+        app._populate_selection()
+        self.assertFalse(app.selected_items)
+        self.assertEqual(len([key for key in app.selection_rows if key[0] == "groups"]), 2)
+        self.assertNotIn(("private", 1), app.selection_rows)
+        self.assertIn(("private", 2), app.selection_rows)
+        self.assertIn(("private", 3), app.selection_rows)
+        self.assertIn(("contacts", 2), app.selection_rows)
+
+    async def test_confirmation_submits_original_snapshot(self):
+        app = self.selected_app()
+        app._account_display = lambda account: "Demo"
+        app.stop_button = Mock()
+        app._set_busy = Mock()
+        app._toggle_selection(("private", 2))
+        captured = []
+        def submit(coroutine, callback, name):
+            captured.append(coroutine.cr_frame.f_locals["snapshot"])
+            coroutine.close()
+        app._submit = submit
+        def confirm(*args, **kwargs):
+            app._select_category("private", True)
+            return True
+        with patch.object(app_module.messagebox, "askyesno", side_effect=confirm):
+            app._confirm_cleanup()
+        self.assertEqual([d.entity.id for d in captured[0].private_users], [2])
+        self.assertFalse(app.preview_loaded)
+
+    async def test_snapshot_account_mismatch_executes_nothing(self):
+        client = FakeClient()
+        app = make_app(client)
+        result = await app._cleanup(app_module.CleanupSelection("other", (), (dialog(2),), ()))
+        self.assertFalse(client.requests)
+        self.assertEqual(len(result["unexecuted"]), 1)
+
+    async def test_clear_preview_discards_selection_and_rows(self):
+        app = self.selected_app()
+        app.account_text = Mock()
+        app._select_category("private", True)
+        app._clear_preview()
+        self.assertFalse(app.selected_items)
+        self.assertFalse(app.selection_rows)
+        self.assertFalse(app.preview_loaded)
+
+    async def test_confirm_empty_or_cancel_never_submits(self):
+        app = self.selected_app()
+        app._account_display = lambda account: "Demo"
+        app._submit = Mock()
+        with patch.object(app_module.messagebox, "showwarning") as warning, patch.object(app_module.messagebox, "askyesno") as ask:
+            app._confirm_cleanup()
+            warning.assert_called_once()
+            ask.assert_not_called()
+        app._toggle_selection(("private", 2))
+        for responses in ([False], [True, False]):
+            with patch.object(app_module.messagebox, "askyesno", side_effect=responses) as ask:
+                app._confirm_cleanup()
+                for call in ask.call_args_list:
+                    self.assertIn("对方聊天记录", call.args[1])
+                    self.assertIn("删除 1 个私聊", call.args[1])
+        app._submit.assert_not_called()
+
+
 class CleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_history_continues_until_zero_and_preserves_boundaries(self):
         client = FakeClient([SimpleNamespace(offset=2), SimpleNamespace(offset=1), SimpleNamespace(offset=0)])
         app = make_app(client)
         app.private_users = [dialog(1, is_self=True), dialog(2, deleted=True)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(client.requests), 3)
         for request in client.requests:
             self.assertIsInstance(request, DeleteHistoryRequest)
@@ -130,7 +266,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient([asyncio.TimeoutError()])
         app = make_app(client)
         app.private_users = [dialog(2), dialog(3)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(client.requests), 1)
         self.assertEqual(len(result["unknown"]), 1)
         self.assertEqual(len(result["unexecuted"]), 1)
@@ -150,7 +286,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         app = make_app(FakeClient([hang]))
         app.private_users = [dialog(2)]
         with patch.object(app_module, "CLEANUP_TIMEOUT", 0.01):
-            result = await app._cleanup()
+            result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertTrue(started.is_set())
         self.assertTrue(cancelled.is_set())
         self.assertEqual(len(result["unknown"]), 1)
@@ -159,7 +295,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient([FloodWaitError(request=None, capture=301)])
         app = make_app(client)
         app.private_users = [dialog(2), dialog(3)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(result["unexecuted"]), 2)
         self.assertEqual(len(client.requests), 1)
 
@@ -169,7 +305,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         app.private_users = [dialog(2)]
         clock = SimpleNamespace(monotonic=Mock(side_effect=[10, 10, 10, 10, 13]))
         with patch.object(app_module, "time", clock), patch.object(app_module.asyncio, "sleep", new=AsyncMock()) as sleep:
-            result = await app._cleanup()
+            result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         sleep.assert_awaited_once()
         self.assertEqual(len(result["success"]), 1)
         self.assertTrue(any("限流等待" in call.args[0] for call in app._progress.call_args_list))
@@ -178,7 +314,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient([FloodWaitError(request=None, capture=0), SimpleNamespace(offset=1), FloodWaitError(request=None, capture=0)])
         app = make_app(client)
         app.private_users = [dialog(2), dialog(3)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(client.requests), 3)
         self.assertEqual(len(result["failed"]), 1)
         self.assertEqual(len(result["unexecuted"]), 1)
@@ -194,7 +330,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient([SimpleNamespace(offset=0), hang])
         app = make_app(client)
         app.private_users = [dialog(2), dialog(3), dialog(4)]
-        task = asyncio.create_task(app._cleanup())
+        task = asyncio.create_task(app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts))))
         await started.wait()
         app._cancel_cleanup()
         result = await task
@@ -208,7 +344,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient(disconnect_error=RuntimeError("disconnect failed"))
         app = make_app(client)
         app.private_users = [dialog(2)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(result["success"]), 1)
         self.assertIn("disconnect failed", result["disconnect_error"])
         self.assertTrue(client.session.closed)
@@ -217,7 +353,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
     async def test_rpc_failure_continues_to_next_item(self):
         app = make_app(FakeClient([RuntimeError("denied"), SimpleNamespace(offset=0)]))
         app.private_users = [dialog(2), dialog(3)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(result["failed"]), 1)
         self.assertEqual(len(result["success"]), 1)
 
@@ -225,7 +361,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient([RuntimeError("bilateral deletion denied")])
         app = make_app(client)
         app.private_users = [dialog(2)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(client.requests), 1)
         request = client.requests[0]
         self.assertFalse(request.just_clear)
@@ -239,7 +375,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client.connected = False
         app = make_app(client)
         app.private_users = [dialog(2)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(result["unexecuted"]), 1)
         self.assertFalse(client.requests)
         self.assertTrue(client.session.closed)
@@ -249,7 +385,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         app = make_app(client)
         app.groups = [(SimpleNamespace(entity=Chat(id=10, title="Group", photo=None, participants_count=1, date=None, version=1)), "群组")]
         app.contacts = [User(id=20)]
-        result = await app._cleanup()
+        result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertEqual(len(result["success"]), 2)
         self.assertEqual(len(client.requests), 2)
         self.assertEqual(client.requests[1].id[0].id, 20)

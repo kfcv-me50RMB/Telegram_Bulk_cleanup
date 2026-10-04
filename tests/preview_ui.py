@@ -11,6 +11,7 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -74,6 +75,14 @@ def preview(output_dir=None):
         app.session_issues = {}
         app.busy = False
         app.connected = False
+        app.preview_loaded = False
+        app.current_account_id = "demo"
+        app.selected_items = set()
+        app.selection_rows = {}
+        app.groups = [(SimpleNamespace(entity=module.Chat(id=i, photo=None, participants_count=0, date=None, version=0, title="演示群组 " + str(i) + " 很长的群组名称" * 3)), "群组") for i in range(1, 25)]
+        app.private_users = [SimpleNamespace(entity=module.User(id=i, first_name="同名演示用户", username="demo_user_" + str(i))) for i in range(1, 187)]
+        app.private_users.append(SimpleNamespace(entity=module.User(id=9999, first_name="Saved Messages", is_self=True)))
+        app.contacts = [module.User(id=i, first_name="演示联系人") for i in range(1, 1251)]
         for name in ("api_id", "api_hash", "selected_account", "account_text", "group_count", "dialog_count", "contact_count", "status_text"):
             setattr(app, name, module.tk.StringVar(root, value=""))
         # Override every business callback before constructing the widgets.
@@ -94,9 +103,44 @@ def preview(output_dir=None):
             app.account_text.set("尚未连接" if state == "empty" else "演示账号 (@demo_account) [ID: 123456789]")
             for variable, value in ((app.group_count, "24"), (app.dialog_count, "186"), (app.contact_count, "1250")):
                 variable.set("—" if state == "empty" else value)
-            app.execute_button.configure(state="normal" if state == "connected" else "disabled")
+            app.busy = False
+            app.preview_loaded = app.connected
+            if app.preview_loaded:
+                app._populate_selection()
+                assert not app.selected_items
+                assert "9999" not in app.selection_trees["private"].get_children()
+                app._select_category("private", True)
+                assert len(app.selected_items) == 186
+                app._select_category("contacts", True)
+                app._select_category("private", False)
+                assert len(app.selected_items) == 1250
+                app._toggle_selection(("private", 1))
+                app._select_category("groups", True)
+                assert app.dialog_count.get() == "1 / 186"
+                root.update()
+                tree = app.selection_trees["private"]
+                box = tree.bbox("1", "checked")
+                assert box
+                x, y, w, h = box
+                app._selection_click("private", SimpleNamespace(x=x + w // 2, y=y + h // 2))
+                assert ("private", 1) not in app.selected_items
+                app._selection_space("private")
+                assert ("private", 1) in app.selected_items
+
+                for tree in app.selection_trees.values():
+                    tree.yview_moveto(1)
+                    tree.yview_moveto(0)
+            else:
+                app._reset_selection()
+            app._update_execute_state()
             app.stop_button.configure(state="normal" if state in ("running", "flood") else "disabled")
             app._set_busy(state in ("running", "flood"), {"empty": "请选择账号并登录。", "connected": "账号已连接，预览已加载", "running": "正在处理 18/24：退出群组：演示群组", "flood": "限流等待：120 秒；删除私聊及双方记录：演示联系人", "failed": "清理结束：成功 20，失败 2，结果未知 1，未执行 3。请重新连接。", "stopped": "清理已停止，请重新连接", "long_text": "网络请求超时，结果未知。" * 10}[state])
+            if app.busy:
+                previous = set(app.selected_items)
+                app._selection_space("private")
+                app._select_category("contacts", False)
+                assert previous == app.selected_items
+                assert all("disabled" in tree.state() for tree in app.selection_trees.values())
             expected = "disabled" if state in ("running", "flood") else "normal"
             assert str(app.add_button["state"]) == expected
             assert str(app.logout_button["state"]) == expected
