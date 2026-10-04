@@ -63,7 +63,7 @@ def capture_window(window, path):
 
 def preview(output_dir=None):
     screenshots = []
-    for scale, width, height in ((1, 1000, 760), (1, 860, 640), (1.25, 1000, 760), (1.5, 1000, 760)):
+    for scale, width, height in ((1, 1000, 760), (1, 860, 640), (1, 1250, 950), (1.25, 1000, 760), (1.5, 1000, 760)):
         root = module.tk.Tk()
         root.title("离线界面预览 · 模拟数据")
         root.geometry(f"{width}x{height}+40+40")
@@ -191,9 +191,20 @@ def preview(output_dir=None):
             for tree in app.selection_trees.values():
                 if tree.winfo_ismapped():
                     assert tree.winfo_height() >= int(28 * app.ui_scale) + 24
+            tree = app.selection_trees["private"]
+            assert app.log.winfo_rootx() < tree.winfo_rootx()
+            assert tree.winfo_height() > app.log.winfo_height() if height <= 760 else tree.winfo_height() > 200
+            assert abs((app.log.master.master.winfo_rooty() + app.log.master.master.winfo_height()) - (app.scope_note.master.winfo_rooty() + app.scope_note.master.winfo_height())) <= 2
+            log_view = app.log.yview()
             app.selection_trees["private"].yview_moveto(1)
             root.update()
             app.selection_trees["private"].yview_moveto(0)
+            assert app.log.yview() == log_view
+            tree_view = tree.yview()
+            app.log.yview_moveto(1)
+            root.update()
+            assert tree.yview() == tree_view
+            app.log.yview_moveto(0)
             # Scroll each panel and confirm that its last controls can actually
             # be reached within the viewport, not merely exist off-screen.
             for target in (app.logout_button,):

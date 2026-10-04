@@ -260,7 +260,7 @@ class CleanupApp:
         shell = ttk.Frame(parent)
         shell.columnconfigure(0, weight=1)
         shell.rowconfigure(0, weight=1)
-        canvas = tk.Canvas(shell, width=width, background=self.colors["background"], highlightthickness=0, borderwidth=0)
+        canvas = tk.Canvas(shell, width=width, height=1, background=self.colors["background"], highlightthickness=0, borderwidth=0)
         canvas.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -314,8 +314,12 @@ class CleanupApp:
         body.columnconfigure(0, minsize=int(240 * min(self.ui_scale, 1.15)) + 12)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
-        sidebar_shell, sidebar = self._scrollable_panel(body, int(240 * min(self.ui_scale, 1.15)))
-        sidebar_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        sidebar_column = ttk.Frame(body)
+        sidebar_column.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        sidebar_column.columnconfigure(0, weight=1)
+        sidebar_column.rowconfigure(1, weight=1)
+        sidebar_shell, sidebar = self._scrollable_panel(sidebar_column, int(240 * min(self.ui_scale, 1.15)))
+        sidebar_shell.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
         sidebar.columnconfigure(0, weight=1)
 
         credentials = self._card(sidebar, "API 凭据")
@@ -353,7 +357,6 @@ class CleanupApp:
         workspace.grid(row=0, column=1, sticky="nsew")
         workspace.columnconfigure(0, weight=1)
         workspace.rowconfigure(1, weight=1, minsize=int(166 + 60 * (self.ui_scale - 1)))
-        workspace.rowconfigure(2, minsize=108)
         summary = ttk.Frame(workspace, style="Card.TFrame", padding=6)
         summary.columnconfigure(0, weight=1)
         summary.grid(row=0, column=0, sticky="ew", pady=(0, 6))
@@ -411,16 +414,27 @@ class CleanupApp:
             tree.bind("<space>", lambda event, c=category: self._selection_space(c))
             self.selection_trees[category] = tree
 
-        log_frame = ttk.Frame(workspace, style="Card.TFrame", padding=6)
+        log_frame = ttk.Frame(sidebar_column, style="Card.TFrame", padding=6)
         log_frame.columnconfigure(0, weight=1)
         ttk.Label(log_frame, text="运行日志", style="Muted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 3))
-        log_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 6))
+        log_frame.grid(row=1, column=0, sticky="nsew")
         log_frame.rowconfigure(1, weight=1, minsize=80)
         self.log = ScrolledText(log_frame, height=1, width=1, state="disabled", wrap="word", **self._text_options())
         self.log.grid(row=1, column=0, sticky="nsew")
 
+        def fit_sidebar(_event=None):
+            # Reserve a usable log while allowing account controls to scroll.
+            log_minimum = max(108, log_frame.winfo_reqheight())
+            available = sidebar_column.winfo_height()
+            controls = min(sidebar.winfo_reqheight() + 8, max(100, available - log_minimum))
+            sidebar_column.rowconfigure(0, minsize=controls)
+            sidebar_column.rowconfigure(1, minsize=log_minimum)
+
+        sidebar_column.bind("<Configure>", fit_sidebar)
+        sidebar.bind("<Configure>", lambda _event: sidebar.after_idle(fit_sidebar), add="+")
+
         footer = ttk.Frame(workspace, style="Card.TFrame", padding=6)
-        footer.grid(row=3, column=0, sticky="ew")
+        footer.grid(row=2, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
         actions = ttk.Frame(footer, style="Surface.TFrame")
         actions.grid(row=0, column=0, sticky="ew")
