@@ -388,6 +388,7 @@ class CleanupApp:
         self.selection_trees = {}
         self.selection_buttons = []
         self.selection_counts = {}
+        self.selection_toggle_buttons = {}
         for category, caption in (("all", "全部"), ("private", "用户私聊"), ("groups", "群组 / 频道"), ("contacts", "联系人")):
             page = ttk.Frame(notebook, style="Surface.TFrame")
             notebook.add(page, text=caption)
@@ -395,10 +396,13 @@ class CleanupApp:
             page.rowconfigure(1, weight=1)
             toolbar = ttk.Frame(page, style="Surface.TFrame")
             toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
-            for label, checked in (("全选全部分类" if category == "all" else "全选本分类", True), ("取消全选", False)):
-                button = ttk.Button(toolbar, text=label, style="Secondary.TButton", command=lambda c=category, v=checked: self._select_category(c, v))
-                button.pack(side="left", padx=3, pady=2)
-                self.selection_buttons.append(button)
+            button = ttk.Button(toolbar, text="全选", style="Secondary.TButton", command=lambda c=category: self._toggle_category_selection(c))
+            button.pack(side="left", padx=3, pady=2)
+            self.selection_buttons.append(button)
+            self.selection_toggle_buttons[category] = button
+            inverse = ttk.Button(toolbar, text="反选", style="Secondary.TButton", command=lambda c=category: self._invert_category_selection(c))
+            inverse.pack(side="left", padx=3, pady=2)
+            self.selection_buttons.append(inverse)
             count = tk.StringVar(value="已选 0 / 共 0 项")
             self.selection_counts[category] = count
             ttk.Label(toolbar, textvariable=count, style="Muted.TLabel").pack(side="right", padx=4)
@@ -759,6 +763,8 @@ class CleanupApp:
     def _reset_selection(self):
         self.selected_items = set()
         self.selection_rows = {}
+        for button in getattr(self, "selection_toggle_buttons", {}).values():
+            button.configure(text="全选")
         for variable in getattr(self, "selection_counts", {}).values():
             variable.set("已选 0 / 共 0 项")
         for tree in getattr(self, "selection_trees", {}).values():
@@ -802,7 +808,23 @@ class CleanupApp:
         for category, variable in getattr(self, "selection_counts", {}).items():
             keys = {key for key in self.selection_rows if category == "all" or key[0] == category}
             variable.set(f"已选 {len(keys & self.selected_items)} / 共 {len(keys)} 项")
+        for category, button in getattr(self, "selection_toggle_buttons", {}).items():
+            keys = self._category_keys(category)
+            button.configure(text="取消全选" if keys and keys <= self.selected_items else "全选")
         self._update_execute_state()
+
+    def _category_keys(self, category):
+        return {key for key in self.selection_rows if category == "all" or key[0] == category}
+
+    def _toggle_category_selection(self, category):
+        keys = self._category_keys(category)
+        self._select_category(category, not (keys and keys <= self.selected_items))
+
+    def _invert_category_selection(self, category):
+        if not self._selection_available():
+            return
+        self.selected_items.symmetric_difference_update(self._category_keys(category))
+        self._refresh_selection()
 
     @staticmethod
     def _selection_row_key(category, row):

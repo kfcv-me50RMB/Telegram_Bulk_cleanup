@@ -153,6 +153,20 @@ def preview(output_dir=None):
                     root.update()
                     assert app.selection_trees[("all", "private", "groups", "contacts")[index]].winfo_ismapped()
                 app.selection_notebook.select(0)
+                saved = set(app.selected_items)
+                button = app.selection_toggle_buttons["all"]
+                assert button["text"] == "全选"
+                button.invoke()
+                assert button["text"] == "取消全选"
+                assert len(app.selected_items) == 1460
+                button.invoke()
+                assert not app.selected_items and button["text"] == "全选"
+                app.selected_items.update(saved)
+                app._refresh_selection()
+                app._invert_category_selection("all")
+                assert len(app.selected_items) == 1460 - len(saved)
+                app._invert_category_selection("all")
+                assert app.selected_items == saved
                 for tree in app.selection_trees.values():
                     tree.yview_moveto(1)
                     tree.yview_moveto(0)

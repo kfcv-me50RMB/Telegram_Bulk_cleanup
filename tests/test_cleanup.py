@@ -170,6 +170,39 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.peer.id for r in client.requests if isinstance(r, DeleteHistoryRequest)], [2, 3])
         self.assertEqual(len([r for r in client.requests if isinstance(r, DeleteContactsRequest)]), 1)
 
+    async def test_dynamic_toggle_and_inversion_preserve_other_categories(self):
+        app = self.selected_app()
+        app.selection_toggle_buttons = {category: Mock() for category in ("all", "private", "contacts")}
+        app._refresh_selection()
+        app.selection_toggle_buttons["all"].configure.assert_called_with(text="全选")
+        app._toggle_category_selection("private")
+        app.selection_toggle_buttons["private"].configure.assert_called_with(text="取消全选")
+        app.selection_toggle_buttons["all"].configure.assert_called_with(text="全选")
+        app._select_category("contacts", True)
+        app.selection_toggle_buttons["all"].configure.assert_called_with(text="取消全选")
+        app._invert_category_selection("private")
+        self.assertEqual(app.selected_items, {("contacts", 2)})
+        app._toggle_selection(("private", 2))
+        app._invert_category_selection("private")
+        self.assertEqual(app.selected_items, {("private", 3), ("contacts", 2)})
+        app._toggle_category_selection("all")
+        self.assertEqual(app.selected_items, set(app.selection_rows))
+        app._toggle_category_selection("all")
+        self.assertFalse(app.selected_items)
+        app._invert_category_selection("all")
+        self.assertEqual(app.selected_items, set(app.selection_rows))
+        app.busy = True
+        app._invert_category_selection("all")
+        app._toggle_category_selection("all")
+        self.assertEqual(app.selected_items, set(app.selection_rows))
+        app.selection_rows = {}
+        app.selected_items.clear()
+        app.busy = False
+        app._refresh_selection()
+        app.selection_toggle_buttons["all"].configure.assert_called_with(text="全选")
+        app._invert_category_selection("all")
+        self.assertFalse(app.selected_items)
+
     async def test_invalid_preview_busy_or_other_account_cannot_select(self):
         app = self.selected_app()
         for name in ("busy", "preview_loaded", "connected"):
