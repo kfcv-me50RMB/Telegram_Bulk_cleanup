@@ -61,6 +61,67 @@ def capture_window(window, path):
         user32.ReleaseDC(hwnd, dc)
 
 
+def preview_login(output_dir=None):
+    for scale in (1, 1.25, 1.5):
+        root = module.tk.Tk()
+        root.geometry("1000x760+20+20")
+        root.tk.call("tk", "scaling", 96 / 72 * scale)
+        app = module.CleanupApp.__new__(module.CleanupApp)
+        app.root = root
+        app._configure_styles()
+        root.update()
+        for kind, value in (("phone", "+86 138-0000-0000"), ("code", "123456"), ("password", " demo password ")):
+            dialog = module.LoginDialog(app, kind)
+            dialog.submit()
+            root.update()
+            assert dialog.error.get() and not dialog.closed
+            dialog.value.set(value)
+            if kind == "password":
+                assert dialog.entry["show"] == "•"
+                dialog.visible.set(True)
+                dialog.toggle_password()
+                assert dialog.entry["show"] == ""
+                dialog.visible.set(False)
+                dialog.toggle_password()
+            root.update()
+            assert dialog.submit_button.winfo_rooty() + dialog.submit_button.winfo_height() <= dialog.window.winfo_rooty() + dialog.window.winfo_height()
+            if output_dir:
+                time.sleep(0.15)
+                capture_window(dialog.window, output_dir / f"login-{kind}-{scale:g}.png")
+            dialog.window.focus_force()
+            root.update()
+            dialog.window.event_generate("<Return>")
+            root.update()
+            assert dialog.closed
+            assert dialog.result == module.LoginDialog.validate(kind, value)
+            assert dialog.value.get() == ""
+            dialog.submit()  # Repeated submission cannot change the result.
+        dialog = module.LoginDialog(app, "phone")
+        dialog.window.focus_force()
+        root.update()
+        dialog.window.event_generate("<Escape>")
+        root.update()
+        assert dialog.closed and dialog.result is None
+        app.closing = False
+        dialog = module.LoginDialog(app, "code")
+        app.login_dialog = dialog
+        app.busy = False
+        app.status_text = module.tk.StringVar(root)
+        app.loop = module.asyncio.new_event_loop()
+        app._shutdown_background = Mock()
+        # Exercise the closing hook only until it starts background shutdown.
+        from unittest.mock import patch
+        with patch.object(module.asyncio, "run_coroutine_threadsafe", side_effect=RuntimeError("offline stop")):
+            try:
+                app._on_close()
+            except RuntimeError:
+                pass
+        assert dialog.closed and dialog.result is None
+        app.loop.close()
+        root.destroy()
+        print(f"Login dialogs verified: scaling {scale:g}")
+
+
 def preview(output_dir=None):
     screenshots = []
     for scale, width, height in ((1, 1000, 760), (1, 860, 640), (1, 1250, 950), (1.25, 1000, 760), (1.5, 1000, 760)):
@@ -281,4 +342,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.output_dir:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+    preview_login(args.output_dir)
     preview(args.output_dir)

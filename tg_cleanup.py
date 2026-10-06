@@ -14,7 +14,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from ctypes import wintypes
 from pathlib import Path
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, ttk
 from tkinter import font as tkfont
 from tkinter.scrolledtext import ScrolledText
 
@@ -80,6 +80,105 @@ class SingleInstance:
         if self.handle:
             self._kernel32.CloseHandle(self.handle)
             self.handle = None
+
+
+class LoginDialog:
+    """UI-only modal input; never reads credentials or constructs a client."""
+
+    @staticmethod
+    def validate(kind, value):
+        if kind == "password":
+            if not value:
+                raise ValueError("请输入两步验证密码。")
+            return value
+        value = value.strip()
+        if kind == "phone":
+            value = "".join(c for c in value if not c.isspace() and c != "-")
+            if not value.startswith("+") or not value[1:] or not all("0" <= c <= "9" for c in value[1:]):
+                raise ValueError("请输入带国家区号的手机号，例如 +8613800000000。")
+        elif not value or not all("0" <= c <= "9" for c in value):
+            raise ValueError("请输入数字验证码。")
+        return value
+
+    def __init__(self, app, kind):
+        self.app, self.kind, self.result = app, kind, None
+        self.closed = False
+        title, step, label, help_text, action = {
+            "phone": ("账号登录", "第 1 步 · 手机号", "手机号", "请输入含国家区号的手机号，例如 +8613800000000。", "发送验证码"),
+            "code": ("登录验证码", "第 2 步 · 验证码", "Telegram 验证码", "请到 Telegram 中查看登录验证码，并在下方输入。", "提交验证码"),
+            "password": ("两步验证", "第 3 步 · 两步验证", "两步验证密码", "请输入此账号设置的两步验证密码，不是登录验证码。", "验证密码"),
+        }[kind]
+        window = self.window = tk.Toplevel(app.root)
+        window.withdraw()
+        window.title(title)
+        window.transient(app.root)
+        window.configure(background=app.colors["background"])
+        window.resizable(False, False)
+        width = min(int(440 * app.ui_scale), window.winfo_screenwidth() - 40)
+        content = ttk.Frame(window, padding=16)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+        ttk.Label(content, text=step, style="Subtitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(content, text=title, style="Title.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 12))
+        card = ttk.Frame(content, style="Card.TFrame", padding=12)
+        card.grid(row=2, column=0, sticky="ew")
+        card.columnconfigure(0, weight=1)
+        ttk.Label(card, text=help_text, style="Muted.TLabel", wraplength=width - 72, justify="left").grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(card, text=label).grid(row=1, column=0, sticky="w", pady=(0, 5))
+        self.value = tk.StringVar(window)
+        self.entry = ttk.Entry(card, textvariable=self.value, show="•" if kind == "password" else "", width=1)
+        self.entry.grid(row=2, column=0, sticky="ew")
+        self.visible = tk.BooleanVar(window, value=False)
+        if kind == "password":
+            ttk.Checkbutton(card, style="Login.TCheckbutton", text="显示密码", variable=self.visible, command=self.toggle_password).grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.error = tk.StringVar(window)
+        tk.Label(card, textvariable=self.error, background=app.colors["surface"], foreground=app.colors["red"], font=app.fonts["small"], height=2, width=1, anchor="w", wraplength=width - 72, justify="left").grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        actions = ttk.Frame(content)
+        actions.grid(row=3, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(actions, text="取消", command=self.cancel).pack(side="left", padx=(0, 8))
+        self.submit_button = ttk.Button(actions, text=action, style="Primary.TButton", command=self.submit)
+        self.submit_button.pack(side="left")
+        window.bind("<Return>", self.submit)
+        window.bind("<Escape>", self.cancel)
+        window.protocol("WM_DELETE_WINDOW", self.cancel)
+        window.update_idletasks()
+        height = window.winfo_reqheight()
+        x = max(0, min(app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2, window.winfo_screenwidth() - width))
+        y = max(0, min(app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2, window.winfo_screenheight() - height))
+        window.geometry(f"{width}x{height}+{x}+{y}")
+        window.deiconify()
+        window.wait_visibility()
+        window.grab_set()
+        self.entry.focus_set()
+
+    def toggle_password(self):
+        self.entry.configure(show="" if self.visible.get() else "•")
+
+    def submit(self, _event=None):
+        if self.closed:
+            return "break"
+        try:
+            result = self.validate(self.kind, self.value.get())
+        except ValueError as exc:
+            self.error.set(str(exc))
+            self.entry.focus_set()
+            return "break"
+        self.submit_button.configure(state="disabled")
+        self.result = result
+        self.finish()
+        return "break"
+
+    def cancel(self, _event=None):
+        if not self.closed:
+            self.result = None
+            self.finish()
+        return "break"
+
+    def finish(self):
+        self.closed = True
+        self.value.set("")
+        self.window.grab_release()
+        self.window.destroy()
 
 
 class CleanupApp:
@@ -187,6 +286,8 @@ class CleanupApp:
         ):
             style.configure(name, font=self.fonts["body"], padding=(10, 5), background=color, foreground=foreground, bordercolor=c["border"] if name == "TButton" else color, borderwidth=1, focusthickness=2, focuscolor=c["blue"])
             style.map(name, background=[("disabled", "#E9EEF4"), ("pressed", pressed), ("active", hover)], foreground=[("disabled", "#748397")], bordercolor=[("disabled", c["border"]), ("focus", c["blue"])])
+        style.configure("Login.TCheckbutton", background=c["surface"], foreground=c["text"], font=self.fonts["small"])
+        style.map("Login.TCheckbutton", background=[("active", c["surface"])], foreground=[("disabled", c["muted"])])
         style.configure("TNotebook", background=c["surface"], borderwidth=0, tabmargins=(0, 0, 0, 6))
         style.configure("TNotebook.Tab", background="#EDF2F8", foreground=c["muted"], padding=(10, 3), font=self.fonts["small"], borderwidth=0)
         style.map("TNotebook.Tab", background=[("selected", "#E3F2FC"), ("active", "#EAF0F7")], foreground=[("selected", "#1379AD"), ("active", c["text"])])
@@ -1291,10 +1392,17 @@ class CleanupApp:
     def _ask_required(self, title, prompt, secret=False):
         if self.closing:
             raise RuntimeError("程序正在退出，登录已取消。")
-        value = simpledialog.askstring(title, prompt, show="*" if secret else None, parent=self.root)
-        if value is None or not value.strip():
-            raise RuntimeError(f"已取消{title}。")
-        return value.strip()
+        kind = "password" if secret else "code" if title == "登录验证码" else "phone"
+        dialog = LoginDialog(self, kind)
+        self.login_dialog = dialog
+        try:
+            self.root.wait_window(dialog.window)
+            if dialog.result is None or self.closing:
+                raise RuntimeError(f"已取消{title}。")
+            return dialog.result
+        finally:
+            dialog.result = None
+            self.login_dialog = None
 
     async def _authenticate(self, client):
         if await self._timed(client.is_user_authorized(), 30, "验证账号会话"):
@@ -1652,6 +1760,9 @@ class CleanupApp:
             return
 
         self.closing = True
+        dialog = getattr(self, "login_dialog", None)
+        if dialog and not dialog.closed:
+            dialog.cancel()
         self.status_text.set("正在停止任务并退出……" if self.busy else "正在退出……")
 
         shutdown_future = asyncio.run_coroutine_threadsafe(self._shutdown_background(), self.loop)

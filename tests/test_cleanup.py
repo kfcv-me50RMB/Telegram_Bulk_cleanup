@@ -112,6 +112,63 @@ def dialog(user_id, **kwargs):
     return SimpleNamespace(entity=User(id=user_id, first_name="Test", **kwargs))
 
 
+class LoginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_input_validation_and_exact_password(self):
+        validate = app_module.LoginDialog.validate
+        self.assertEqual(validate("phone", " +86 138-0000-0000 "), "+8613800000000")
+        self.assertEqual(validate("code", " 123456 "), "123456")
+        self.assertEqual(validate("password", " password "), " password ")
+        self.assertEqual(validate("password", " "), " ")
+        for kind, value in (("phone", ""), ("phone", "86123"), ("phone", "+"), ("phone", "+86abc"), ("code", ""), ("code", "１２３"), ("code", "12a"), ("password", "")):
+            with self.assertRaises(ValueError):
+                validate(kind, value)
+
+    async def test_authentication_retries_and_preserves_password(self):
+        from telethon.errors import PhoneCodeInvalidError, SessionPasswordNeededError, PasswordHashInvalidError
+        app = make_app()
+        client = SimpleNamespace(is_user_authorized=AsyncMock(return_value=False), send_code_request=AsyncMock(return_value=SimpleNamespace(phone_code_hash="hash")), sign_in=AsyncMock(side_effect=[PhoneCodeInvalidError(None), SessionPasswordNeededError(None), PasswordHashInvalidError(None), None]))
+        app._ask_required = Mock(side_effect=["+8613800000000", "123", "456", " password ", " password "])
+        with patch.object(app_module.messagebox, "showwarning") as warning:
+            await app._authenticate(client)
+            self.assertEqual(warning.call_count, 2)
+        client.send_code_request.assert_awaited_once_with("+8613800000000")
+        self.assertEqual(client.sign_in.await_args_list[0].args, ("+8613800000000", "123"))
+        self.assertEqual(client.sign_in.await_args_list[0].kwargs, {"phone_code_hash": "hash"})
+        self.assertEqual(client.sign_in.await_args_list[-1].kwargs, {"password": " password "})
+
+    async def test_three_invalid_codes_and_expiry_keep_existing_limits(self):
+        from telethon.errors import PhoneCodeInvalidError, PhoneCodeExpiredError
+        for failure, expected in ((PhoneCodeInvalidError, 3), (PhoneCodeExpiredError, 1)):
+            app = make_app()
+            client = SimpleNamespace(is_user_authorized=AsyncMock(return_value=False), send_code_request=AsyncMock(return_value=SimpleNamespace(phone_code_hash="hash")), sign_in=AsyncMock(side_effect=failure(None)))
+            app._ask_required = Mock(side_effect=["+86123", "123", "456", "789"])
+            with patch.object(app_module.messagebox, "showwarning"), self.assertRaises(RuntimeError):
+                await app._authenticate(client)
+            self.assertEqual(client.sign_in.await_count, expected)
+
+    async def test_dialog_wrapper_preserves_password_and_erases_result(self):
+        app = make_app()
+        app.root = Mock()
+        app.closing = False
+        dialog = SimpleNamespace(window=Mock(), result=" password ")
+        with patch.object(app_module, "LoginDialog", return_value=dialog) as factory:
+            self.assertEqual(app._ask_required("两步验证", "prompt", secret=True), " password ")
+            factory.assert_called_once_with(app, "password")
+        self.assertIsNone(dialog.result)
+        self.assertIsNone(app.login_dialog)
+        dialog.result = None
+        with patch.object(app_module, "LoginDialog", return_value=dialog), self.assertRaises(RuntimeError):
+            app._ask_required("账号登录", "prompt")
+
+    async def test_cancel_prevents_sending_code(self):
+        app = make_app()
+        client = SimpleNamespace(is_user_authorized=AsyncMock(return_value=False), send_code_request=AsyncMock())
+        app._ask_required = Mock(side_effect=RuntimeError("cancelled"))
+        with self.assertRaises(RuntimeError):
+            await app._authenticate(client)
+        client.send_code_request.assert_not_awaited()
+
+
 class SelectionTests(unittest.IsolatedAsyncioTestCase):
     def selected_app(self):
         app = make_app()
