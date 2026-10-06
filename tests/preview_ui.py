@@ -118,6 +118,8 @@ def preview(output_dir=None):
                 app._select_category("groups", True)
                 assert app.dialog_count.get() == "1 / 186"
                 root.update()
+                app.selection_notebook.select(1)
+                root.update()
                 tree = app.selection_trees["private"]
                 box = tree.bbox("1", "checked")
                 assert box
@@ -128,6 +130,29 @@ def preview(output_dir=None):
                 app._selection_space("private")
                 assert ("private", 1) in app.selected_items
 
+                all_tree = app.selection_trees["all"]
+                assert len(all_tree.get_children()) == 186 + 24 + 1250
+                assert all_tree.set("private:1", "checked") == "☑"
+                assert all_tree.set("contacts:1", "checked") == "☑"
+                app.selection_notebook.select(0)
+                root.update()
+                root.update()
+                box = all_tree.bbox("private:1", "checked")
+                assert box and box[1] + box[3] <= all_tree.winfo_height()
+                x, y, w, h = box
+                app._selection_click("all", SimpleNamespace(x=x + w // 2, y=y + h // 2))
+                assert app.selection_trees["private"].set("1", "checked") == "☐"
+                app._selection_space("all")
+                assert app.selection_trees["private"].set("1", "checked") == "☑"
+                all_tree.focus("private:1")
+                app._selection_space("all")
+                assert app.selection_trees["private"].set("1", "checked") == "☐"
+                app._selection_space("all")
+                for index in range(4):
+                    app.selection_notebook.select(index)
+                    root.update()
+                    assert app.selection_trees[("all", "private", "groups", "contacts")[index]].winfo_ismapped()
+                app.selection_notebook.select(0)
                 for tree in app.selection_trees.values():
                     tree.yview_moveto(1)
                     tree.yview_moveto(0)
@@ -191,14 +216,14 @@ def preview(output_dir=None):
             for tree in app.selection_trees.values():
                 if tree.winfo_ismapped():
                     assert tree.winfo_height() >= int(28 * app.ui_scale) + 24
-            tree = app.selection_trees["private"]
+            tree = app.selection_trees["all"]
             assert app.log.winfo_rootx() < tree.winfo_rootx()
             assert tree.winfo_height() > app.log.winfo_height() if height <= 760 else tree.winfo_height() > 200
             assert abs((app.log.master.master.winfo_rooty() + app.log.master.master.winfo_height()) - (app.scope_note.master.winfo_rooty() + app.scope_note.master.winfo_height())) <= 2
             log_view = app.log.yview()
-            app.selection_trees["private"].yview_moveto(1)
+            tree.yview_moveto(1)
             root.update()
-            app.selection_trees["private"].yview_moveto(0)
+            tree.yview_moveto(0)
             assert app.log.yview() == log_view
             tree_view = tree.yview()
             app.log.yview_moveto(1)

@@ -191,7 +191,7 @@ class CleanupApp:
         style.configure("TNotebook.Tab", background="#EDF2F8", foreground=c["muted"], padding=(10, 3), font=self.fonts["small"], borderwidth=0)
         style.map("TNotebook.Tab", background=[("selected", "#E3F2FC"), ("active", "#EAF0F7")], foreground=[("selected", "#1379AD"), ("active", c["text"])])
         style.configure("Treeview", background=c["surface"], fieldbackground=c["surface"], foreground=c["text"], font=self.fonts["body"], rowheight=int(28 * self.ui_scale), borderwidth=0)
-        style.configure("Treeview.Heading", background="#EDF3F9", foreground=c["muted"], font=self.fonts["small"], padding=(8, 3), relief="flat")
+        style.configure("Treeview.Heading", background="#EDF3F9", foreground=c["muted"], font=(*self.fonts["small"], "bold"), padding=(8, 3), relief="flat")
         style.map("Treeview", background=[("selected", "#DCEFFC")], foreground=[("disabled", c["muted"]), ("selected", c["text"])])
         style.map("Treeview.Heading", background=[("active", "#E3EDF7")])
         style.configure("Horizontal.TScrollbar", background="#D7E1ED", troughcolor=c["surface"], bordercolor=c["surface"], arrowcolor=c["muted"])
@@ -383,25 +383,34 @@ class CleanupApp:
         selection.grid(row=1, column=0, sticky="nsew", pady=(0, 6))
         selection.columnconfigure(0, weight=1)
         selection.rowconfigure(0, weight=1)
-        notebook = ttk.Notebook(selection)
+        self.selection_notebook = notebook = ttk.Notebook(selection)
         notebook.grid(row=0, column=0, sticky="nsew")
         self.selection_trees = {}
         self.selection_buttons = []
-        for category, caption in (("private", "用户私聊"), ("groups", "群组 / 频道"), ("contacts", "联系人")):
+        self.selection_counts = {}
+        for category, caption in (("all", "全部"), ("private", "用户私聊"), ("groups", "群组 / 频道"), ("contacts", "联系人")):
             page = ttk.Frame(notebook, style="Surface.TFrame")
             notebook.add(page, text=caption)
             page.columnconfigure(0, weight=1)
             page.rowconfigure(1, weight=1)
             toolbar = ttk.Frame(page, style="Surface.TFrame")
             toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
-            for label, checked in (("全选", True), ("取消全选", False)):
+            for label, checked in (("全选全部分类" if category == "all" else "全选本分类", True), ("取消全选", False)):
                 button = ttk.Button(toolbar, text=label, style="Secondary.TButton", command=lambda c=category, v=checked: self._select_category(c, v))
                 button.pack(side="left", padx=3, pady=2)
                 self.selection_buttons.append(button)
-            tree = ttk.Treeview(page, columns=("checked", "name", "username", "id"), show="headings", height=1, selectmode="browse")
-            for column, title, width in (("checked", "勾选", 48), ("name", "名称", 190), ("username", "用户名", 120), ("id", "Telegram ID", 110)):
-                tree.heading(column, text=title)
-                tree.column(column, width=width, minwidth=width if column == "checked" else 60, stretch=column != "checked")
+            count = tk.StringVar(value="已选 0 / 共 0 项")
+            self.selection_counts[category] = count
+            ttk.Label(toolbar, textvariable=count, style="Muted.TLabel").pack(side="right", padx=4)
+            columns = ("checked", "type", "name", "username", "id") if category == "all" else ("checked", "name", "username", "id")
+            tree = ttk.Treeview(page, columns=columns, show="headings", height=1, selectmode="browse")
+            definitions = (("checked", "勾选", 48), ("type", "类型", 90), ("name", "名称", 190), ("username", "用户名", 120), ("id", "Telegram ID", 120))
+            for column, title, width in definitions:
+                if column not in columns:
+                    continue
+                anchor = "center" if column in ("checked", "type") else "e" if column == "id" else "w"
+                tree.heading(column, text=title, anchor=anchor)
+                tree.column(column, width=width, minwidth=width, stretch=column == "name", anchor=anchor)
             tree.tag_configure("even", background="#FFFFFF")
             tree.tag_configure("odd", background="#F5F8FC")
             tree.grid(row=1, column=0, sticky="nsew")
@@ -750,6 +759,8 @@ class CleanupApp:
     def _reset_selection(self):
         self.selected_items = set()
         self.selection_rows = {}
+        for variable in getattr(self, "selection_counts", {}).values():
+            variable.set("已选 0 / 共 0 项")
         for tree in getattr(self, "selection_trees", {}).values():
             tree.delete(*tree.get_children())
 
@@ -768,7 +779,12 @@ class CleanupApp:
                 self.selection_rows[key] = item
                 name = getattr(entity, "title", None) or " ".join(v for v in (getattr(entity, "first_name", None), getattr(entity, "last_name", None)) if v) or str(entity.id)
                 tree = self.selection_trees[category]
-                tree.insert("", "end", iid=str(peer_id), tags=("odd" if len(tree.get_children()) % 2 else "even",), values=("☐", name, "@" + entity.username if getattr(entity, "username", None) else "—", str(peer_id)))
+                values = ("☐", name, "@" + entity.username if getattr(entity, "username", None) else "—", str(peer_id))
+                tree.insert("", "end", iid=str(peer_id), tags=("odd" if len(tree.get_children()) % 2 else "even",), values=values)
+                all_tree = self.selection_trees.get("all")
+                if all_tree is not None:
+                    kind = {"private": "用户私聊", "groups": "群组/频道", "contacts": "联系人"}[category]
+                    all_tree.insert("", "end", iid=f"{category}:{peer_id}", tags=("odd" if len(all_tree.get_children()) % 2 else "even",), values=(values[0], kind, *values[1:]))
         self._refresh_selection()
 
     def _refresh_selection(self):
@@ -779,7 +795,21 @@ class CleanupApp:
             if tree:
                 for key in keys:
                     tree.set(str(key[1]), "checked", "☑" if key in self.selected_items else "☐")
+        all_tree = self.selection_trees.get("all")
+        if all_tree is not None:
+            for key in self.selection_rows:
+                all_tree.set(f"{key[0]}:{key[1]}", "checked", "☑" if key in self.selected_items else "☐")
+        for category, variable in getattr(self, "selection_counts", {}).items():
+            keys = {key for key in self.selection_rows if category == "all" or key[0] == category}
+            variable.set(f"已选 {len(keys & self.selected_items)} / 共 {len(keys)} 项")
         self._update_execute_state()
+
+    @staticmethod
+    def _selection_row_key(category, row):
+        if category == "all":
+            kind, peer_id = row.split(":", 1)
+            return kind, int(peer_id)
+        return category, int(row)
 
     def _toggle_selection(self, key):
         if not self._selection_available() or key not in self.selection_rows:
@@ -793,7 +823,7 @@ class CleanupApp:
     def _select_category(self, category, checked):
         if not self._selection_available():
             return
-        keys = {key for key in self.selection_rows if key[0] == category}
+        keys = {key for key in self.selection_rows if category == "all" or key[0] == category}
         if checked:
             self.selected_items.update(keys)
         else:
@@ -806,13 +836,13 @@ class CleanupApp:
         if row and tree.identify_region(event.x, event.y) == "cell" and tree.identify_column(event.x) == "#1":
             tree.focus(row)
             tree.selection_set(row)
-            self._toggle_selection((category, int(row)))
+            self._toggle_selection(self._selection_row_key(category, row))
             return "break"
 
     def _selection_space(self, category):
         row = self.selection_trees[category].focus()
         if row:
-            self._toggle_selection((category, int(row)))
+            self._toggle_selection(self._selection_row_key(category, row))
         return "break"
 
     def _selection_snapshot(self):

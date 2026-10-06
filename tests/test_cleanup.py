@@ -141,6 +141,35 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
         app._toggle_selection(("contacts", 2))
         self.assertFalse(app.selected_items)
 
+    async def test_all_selection_shared_and_snapshot_has_no_duplicates(self):
+        app = self.selected_app()
+        app._select_category("all", True)
+        self.assertEqual(app.selected_items, set(app.selection_rows))
+        snapshot = app._selection_snapshot()
+        self.assertEqual(len(snapshot.private_users), 2)
+        self.assertEqual(len(snapshot.contacts), 1)
+        app._toggle_selection(app._selection_row_key("all", "private:2"))
+        self.assertNotIn(("private", 2), app.selected_items)
+        self.assertIn(("contacts", 2), app.selected_items)
+        app._select_category("private", True)
+        self.assertIn(("private", 2), app.selected_items)
+        app._select_category("all", False)
+        self.assertFalse(app.selected_items)
+
+    async def test_all_snapshot_executes_each_operation_once(self):
+        from telethon.tl.functions.contacts import DeleteContactsRequest
+        app = self.selected_app()
+        client = FakeClient()
+        app.client = client
+        app.clients = {client}
+        app._select_category("all", True)
+        app._select_category("private", True)
+        snapshot = app._selection_snapshot()
+        result = await app._cleanup(snapshot)
+        self.assertEqual(len(result["success"]), 3)
+        self.assertEqual([r.peer.id for r in client.requests if isinstance(r, DeleteHistoryRequest)], [2, 3])
+        self.assertEqual(len([r for r in client.requests if isinstance(r, DeleteContactsRequest)]), 1)
+
     async def test_invalid_preview_busy_or_other_account_cannot_select(self):
         app = self.selected_app()
         for name in ("busy", "preview_loaded", "connected"):
@@ -181,7 +210,7 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
                       (SimpleNamespace(entity=Channel(id=7, title="Same", photo=None, date=None)), "频道")]
         app.private_users = [dialog(2), dialog(3), dialog(1, is_self=True)]
         app.contacts = [User(id=2, first_name="Test")]
-        app.selection_trees = {category: Mock() for category in ("groups", "private", "contacts")}
+        app.selection_trees = {category: Mock() for category in ("all", "groups", "private", "contacts")}
         for tree in app.selection_trees.values():
             tree.get_children.return_value = ()
         app._populate_selection()
