@@ -61,6 +61,41 @@ def capture_window(window, path):
         user32.ReleaseDC(hwnd, dc)
 
 
+def preview_qr(output_dir=None):
+    for scale in (1, 1.25, 1.5):
+        root = module.tk.Tk()
+        root.geometry("1000x760+20+20")
+        root.tk.call("tk", "scaling", 96 / 72 * scale)
+        app = module.CleanupApp.__new__(module.CleanupApp)
+        app.root = root
+        app._configure_styles()
+        root.update()
+        choice = module.LoginMethodDialog(app)
+        choice.finish("qr")
+        assert choice.closed and choice.result == "qr"
+        on_cancel = Mock()
+        dialog = module.QRLoginDialog(app, on_cancel, demo=True)
+        root.update()
+        assert dialog.image is None
+        dialog.show_code("https://example.invalid/qr-demo-not-for-login", 30)
+        root.update()
+        assert dialog.image is not None and "剩余" in dialog.status.get()
+        for widget in dialog.window.winfo_children():
+            assert widget.winfo_rooty() + widget.winfo_height() <= dialog.window.winfo_rooty() + dialog.window.winfo_height()
+        if output_dir:
+            time.sleep(0.15)
+            capture_window(dialog.window, output_dir / f"qr-demo-{scale:g}.png")
+        dialog.loading()
+        assert dialog.image is None
+        dialog.show_code("https://example.invalid/qr-demo-refreshed", 30)
+        root.update()
+        dialog.cancel()
+        assert dialog.closed and dialog.image is None and dialog.timer is None
+        on_cancel.assert_called_once()
+        root.destroy()
+        print(f"QR preview verified: scaling {scale:g}; synthetic code only")
+
+
 def preview_login(output_dir=None):
     for scale in (1, 1.25, 1.5):
         root = module.tk.Tk()
@@ -342,5 +377,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.output_dir:
         args.output_dir.mkdir(parents=True, exist_ok=True)
+    preview_qr(args.output_dir)
     preview_login(args.output_dir)
     preview(args.output_dir)

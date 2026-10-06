@@ -112,6 +112,142 @@ def dialog(user_id, **kwargs):
     return SimpleNamespace(entity=User(id=user_id, first_name="Test", **kwargs))
 
 
+class QRTests(unittest.IsolatedAsyncioTestCase):
+    def setup_qr(self, outcomes=("success",)):
+        import datetime
+        app = make_app()
+        dialog = SimpleNamespace(show_code=Mock(), loading=Mock())
+        app._open_qr_dialog = Mock(return_value=dialog)
+        app._finish_qr_dialog = Mock()
+        active = set()
+        sequence = list(outcomes)
+        async def wait(timeout=None):
+            active.add("listener")
+            try:
+                await asyncio.sleep(0)
+                outcome = sequence.pop(0)
+                if outcome == "expiry":
+                    raise asyncio.TimeoutError()
+                if outcome == "cancel":
+                    event = app._open_qr_dialog.call_args.args[0]
+                    event.set()
+                    await asyncio.Event().wait()
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return User(id=1, first_name="Demo")
+            finally:
+                active.clear()
+        qr = SimpleNamespace(url="https://example.invalid/qr-demo", expires=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=30), wait=wait, recreate=AsyncMock())
+        client = SimpleNamespace(add_event_handler=Mock(), remove_event_handler=Mock(), qr_login=AsyncMock(return_value=qr), is_user_authorized=AsyncMock(return_value=False), sign_in=AsyncMock())
+        def show(url, lifetime):
+            self.assertIn("listener", active)
+            self.assertGreater(lifetime, 0)
+        dialog.show_code.side_effect = show
+        return app, client, qr, dialog, active
+
+    async def test_wait_listener_starts_before_display_and_is_removed(self):
+        app, client, qr, dialog, active = self.setup_qr()
+        await app._authenticate(client, "qr")
+        self.assertFalse(active)
+        client.remove_event_handler.assert_called_once()
+        dialog.show_code.assert_called_once()
+        app._finish_qr_dialog.assert_called_once_with(dialog)
+
+    async def test_expiry_refreshes_then_completes(self):
+        app, client, qr, dialog, active = self.setup_qr(("expiry", "success"))
+        await app._authenticate_qr(client)
+        qr.recreate.assert_awaited_once()
+        dialog.loading.assert_called_once()
+        self.assertEqual(dialog.show_code.call_count, 2)
+        self.assertFalse(active)
+
+    async def test_two_factor_uses_existing_password_flow(self):
+        from telethon.errors import SessionPasswordNeededError
+        app, client, qr, dialog, active = self.setup_qr((SessionPasswordNeededError(None),))
+        app._ask_required = Mock(return_value=" password ")
+        await app._authenticate(client, "qr")
+        client.sign_in.assert_awaited_once_with(password=" password ")
+        app._finish_qr_dialog.assert_called_once()
+
+    async def test_cancel_releases_listener_and_closes_window(self):
+        app, client, qr, dialog, active = self.setup_qr(("cancel",))
+        with self.assertRaises(app_module.QRLoginCancelled):
+            await app._authenticate_qr(client)
+        self.assertFalse(active)
+        app._finish_qr_dialog.assert_called_once()
+
+    async def test_fetch_cancel_and_network_failure_close_window(self):
+        app, client, qr, dialog, active = self.setup_qr()
+        async def blocked():
+            app._open_qr_dialog.call_args.args[0].set()
+            await asyncio.Event().wait()
+        client.qr_login.side_effect = blocked
+        with self.assertRaises(app_module.QRLoginCancelled):
+            await app._authenticate_qr(client)
+        app._finish_qr_dialog.assert_called_once()
+        app, client, qr, dialog, active = self.setup_qr()
+        client.qr_login.side_effect = OSError("network unavailable")
+        with self.assertRaises(RuntimeError):
+            await app._authenticate_qr(client)
+        app._finish_qr_dialog.assert_called_once()
+
+    async def test_cancel_after_scan_stops_token_exchange(self):
+        app, client, qr, dialog, active = self.setup_qr()
+        async def exchanging(timeout=None):
+            await client.add_event_handler.call_args.args[0](None)
+            app._open_qr_dialog.call_args.args[0].set()
+            await asyncio.Event().wait()
+        qr.wait = exchanging
+        dialog.show_code.side_effect = None
+        with self.assertRaises(app_module.QRLoginCancelled):
+            await app._authenticate_qr(client)
+        client.remove_event_handler.assert_called_once()
+        app._finish_qr_dialog.assert_called_once()
+
+    async def test_total_timeout_and_existing_authorization(self):
+        app, client, qr, dialog, active = self.setup_qr()
+        with patch.object(app_module, "QR_LOGIN_TIMEOUT", 0), self.assertRaises(RuntimeError):
+            await app._authenticate_qr(client)
+        app._finish_qr_dialog.assert_called_once()
+        client.is_user_authorized.return_value = True
+        await app._authenticate(client, "qr")
+        client.sign_in.assert_not_awaited()
+
+    async def test_qr_library_error_never_exposes_token(self):
+        app, client, qr, dialog, active = self.setup_qr((TypeError("login token SECRET_TOKEN"),))
+        with self.assertRaises(RuntimeError) as error:
+            await app._authenticate_qr(client)
+        self.assertNotIn("SECRET_TOKEN", str(error.exception))
+        self.assertFalse(active)
+        client.remove_event_handler.assert_called_once()
+
+    async def test_unknown_authorization_retains_retryable_account(self):
+        app = make_app()
+        client = FakeClient()
+        client.is_user_authorized = AsyncMock(return_value=False)
+        client.get_me = AsyncMock(side_effect=OSError("network"))
+        app._authenticate = AsyncMock(side_effect=asyncio.CancelledError())
+        app._register_authorized_account = Mock()
+        account = {"id": "new", "session": "sessions/demo", "label": "Demo"}
+        with patch.object(app_module, "TelegramClient", return_value=client), self.assertRaises(asyncio.CancelledError):
+            await app._prepare(1, "demo", Path("demo"), delete_on_auth_failure=True, allow_authentication=True, new_account=account, authentication_method="qr")
+        app._register_authorized_account.assert_called_once_with(account, authorized=False)
+        app._delete_session_files.assert_not_awaited()
+
+    async def test_cancel_racing_authorization_preserves_registry_and_session(self):
+        app = make_app()
+        client = FakeClient()
+        client.is_user_authorized = AsyncMock(side_effect=[False, True])
+        account = {"id": "new", "session": "sessions/demo", "label": "Demo"}
+        app._authenticate = AsyncMock(side_effect=asyncio.CancelledError())
+        app._register_authorized_account = Mock()
+        with patch.object(app_module, "TelegramClient", return_value=client), self.assertRaises(asyncio.CancelledError):
+            await app._prepare(1, "demo", Path("demo"), delete_on_auth_failure=True, allow_authentication=True, new_account=account, authentication_method="qr")
+        app._register_authorized_account.assert_called_once_with(account)
+        app._delete_session_files.assert_not_awaited()
+        self.assertFalse(client.connected)
+
+
 class LoginTests(unittest.IsolatedAsyncioTestCase):
     async def test_input_validation_and_exact_password(self):
         validate = app_module.LoginDialog.validate

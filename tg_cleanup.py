@@ -2,6 +2,7 @@
 
 import asyncio
 import ctypes
+import datetime
 import json
 import queue
 import sqlite3
@@ -18,7 +19,9 @@ from tkinter import messagebox, ttk
 from tkinter import font as tkfont
 from tkinter.scrolledtext import ScrolledText
 
-from telethon import TelegramClient
+import qrcode
+
+from telethon import TelegramClient, events
 from telethon.utils import get_peer_id
 from telethon.errors import (
     FloodWaitError,
@@ -31,7 +34,7 @@ from telethon.tl.functions.channels import LeaveChannelRequest
 from telethon.tl.functions.auth import LogOutRequest
 from telethon.tl.functions.contacts import DeleteContactsRequest, GetContactsRequest
 from telethon.tl.functions.messages import DeleteHistoryRequest
-from telethon.tl.types import Channel, Chat, User
+from telethon.tl.types import Channel, Chat, User, UpdateLoginToken
 
 
 BASE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -41,6 +44,7 @@ SESSIONS_DIR = BASE_DIR / "sessions"
 INSTANCE_MUTEX_NAME = "Local\\TelegramCleanupGUI_8D634395"
 CLEANUP_TIMEOUT = 60
 MAX_FLOOD_WAIT = 300
+QR_LOGIN_TIMEOUT = 300
 
 
 @dataclass(frozen=True)
@@ -179,6 +183,134 @@ class LoginDialog:
         self.value.set("")
         self.window.grab_release()
         self.window.destroy()
+
+
+class QRLoginCancelled(RuntimeError):
+    """User cancelled QR login; do not present it as a network failure."""
+
+
+class LoginMethodDialog:
+    def __init__(self, app):
+        self.result = None
+        self.closed = False
+        self.window = tk.Toplevel(app.root)
+        self.window.title("添加账号 · 选择登录方式")
+        self.window.transient(app.root)
+        self.window.resizable(False, False)
+        content = ttk.Frame(self.window, padding=20)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text="选择登录方式", style="Title.TLabel").pack(anchor="w", pady=(0, 12))
+        ttk.Label(content, text="两种方式均需 API 凭据；启用两步验证的账号仍需输入密码。", style="Subtitle.TLabel", wraplength=int(350 * app.ui_scale)).pack(anchor="w", pady=(0, 16))
+        ttk.Button(content, text="扫码登录", style="Primary.TButton", command=lambda: self.finish("qr")).pack(fill="x", pady=(0, 8))
+        ttk.Button(content, text="手机号登录", command=lambda: self.finish("phone")).pack(fill="x", pady=(0, 8))
+        ttk.Button(content, text="取消", command=self.cancel).pack(anchor="e")
+        self.window.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.window.bind("<Escape>", self.cancel)
+        self.window.update_idletasks()
+        width, height = self.window.winfo_reqwidth(), self.window.winfo_reqheight()
+        x = max(0, min(app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2, self.window.winfo_screenwidth() - width))
+        y = max(0, min(app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2, self.window.winfo_screenheight() - height))
+        self.window.geometry(f"+{x}+{y}")
+        self.window.wait_visibility()
+        self.window.grab_set()
+
+    def finish(self, result=None):
+        if self.closed:
+            return
+        self.result = result
+        self.closed = True
+        self.window.grab_release()
+        self.window.destroy()
+
+    def cancel(self, _event=None):
+        self.finish()
+
+
+class QRLoginDialog:
+    """QR image lives only in memory; callbacks never perform network I/O."""
+    def __init__(self, app, on_cancel, demo=False):
+        self.closed = False
+        self.image = None
+        self.timer = None
+        self.on_cancel = on_cancel
+        self.expires_at = None
+        self.window = tk.Toplevel(app.root)
+        self.window.title("扫码登录" + (" · 离线演示" if demo else ""))
+        self.window.transient(app.root)
+        self.window.resizable(False, False)
+        content = ttk.Frame(self.window, padding=16)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, text="扫码登录", style="Title.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(content, text=("演示二维码，不能用于登录。" if demo else "请使用已登录的 Telegram 手机客户端，在设置中的设备页面扫描并确认登录。"), style="Subtitle.TLabel", wraplength=int(330 * app.ui_scale), justify="left").pack(anchor="w", pady=(0, 12))
+        self.image_label = tk.Label(content, background="white", text="正在获取二维码……", width=30, height=15)
+        self.image_label.pack(fill="both", padx=4)
+        self.status = tk.StringVar(self.window, value="正在获取二维码……")
+        ttk.Label(content, textvariable=self.status, style="Subtitle.TLabel").pack(anchor="w", pady=10)
+        ttk.Button(content, text="取消", command=self.cancel).pack(anchor="e")
+        self.window.protocol("WM_DELETE_WINDOW", self.cancel)
+        self.window.bind("<Escape>", self.cancel)
+        self.window.update_idletasks()
+        width, height = self.window.winfo_reqwidth(), self.window.winfo_reqheight()
+        x = max(0, min(app.root.winfo_rootx() + (app.root.winfo_width() - width) // 2, self.window.winfo_screenwidth() - width))
+        y = max(0, min(app.root.winfo_rooty() + (app.root.winfo_height() - height) // 2, self.window.winfo_screenheight() - height))
+        self.window.geometry(f"+{x}+{y}")
+        self.window.wait_visibility()
+        self.window.grab_set()
+        self.scale = app.ui_scale
+
+    def loading(self):
+        if self.closed:
+            return
+        if self.timer is not None:
+            self.window.after_cancel(self.timer)
+            self.timer = None
+        self.expires_at = None
+        self.image_label.configure(image="", text="正在刷新二维码……", width=30, height=15)
+        self.image = None
+        self.status.set("正在刷新二维码……")
+
+    def show_code(self, url, lifetime):
+        if self.closed:
+            return
+        qr = qrcode.QRCode(border=4, error_correction=qrcode.constants.ERROR_CORRECT_M)
+        qr.add_data(url)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+        size = len(matrix)
+        image = tk.PhotoImage(master=self.window, width=size, height=size)
+        image.put(" ".join("{" + " ".join("#000000" if cell else "#ffffff" for cell in row) + "}" for row in matrix))
+        self.image = image.zoom(max(1, int(240 * self.scale) // size))
+        self.image_label.configure(image=self.image, text="", width=0, height=0)
+        self.expires_at = time.monotonic() + lifetime
+        self.tick()
+
+    def tick(self):
+        if self.closed or self.expires_at is None:
+            return
+        remaining = max(0, int(self.expires_at - time.monotonic()))
+        if remaining == 0:
+            self.loading()
+            return
+        self.status.set(f"二维码剩余 {remaining} 秒，过期后自动刷新。")
+        self.timer = self.window.after(1000, self.tick)
+
+    def finish(self):
+        if self.closed:
+            return
+        self.closed = True
+        if self.timer is not None:
+            self.window.after_cancel(self.timer)
+            self.timer = None
+        self.image_label.configure(image="")
+        self.image = None
+        self.expires_at = None
+        self.window.grab_release()
+        self.window.destroy()
+
+    def cancel(self, _event=None):
+        if not self.closed:
+            self.on_cancel()
+            self.finish()
 
 
 class CleanupApp:
@@ -1053,6 +1185,11 @@ class CleanupApp:
             self._set_busy(False, "就绪")
             try:
                 result = future.result()
+            except QRLoginCancelled:
+                self.connected = False
+                self._clear_preview()
+                self.status_text.set("扫码登录已取消；已授权或状态待核对的账号会保留，请重新连接核对。")
+                self._log("扫码登录已取消，连接已释放。")
             except Exception as exc:
                 if operation_name in ("登录账号", "切换账号", "添加账号", "断开账号"):
                     self.connected = False
@@ -1106,8 +1243,13 @@ class CleanupApp:
         )
 
     def _add_account(self):
+        if self.busy or self.closing:
+            return
         credentials = self._credentials()
         if not credentials:
+            return
+        method = self._choose_login_method()
+        if method is None or self.closing:
             return
         account_id = uuid.uuid4().hex
         account = {
@@ -1132,6 +1274,7 @@ class CleanupApp:
                 delete_on_auth_failure=True,
                 allow_authentication=True,
                 new_account=account,
+                authentication_method=method,
             ),
             lambda result: self._new_account_connected(account, result),
             "添加账号",
@@ -1173,8 +1316,8 @@ class CleanupApp:
             self.accounts.append(account)
         self._account_connected(account, result)
 
-    def _register_authorized_account(self, account):
-        account["label"] = "已授权账号（连接后识别）"
+    def _register_authorized_account(self, account, authorized=True):
+        account["label"] = "已授权账号（连接后识别）" if authorized else "扫码账号（授权状态待核对）"
         self.accounts.append(account)
         try:
             self._save_config(account["id"])
@@ -1404,9 +1547,115 @@ class CleanupApp:
             dialog.result = None
             self.login_dialog = None
 
-    async def _authenticate(self, client):
+    def _choose_login_method(self):
+        dialog = LoginMethodDialog(self)
+        self.login_dialog = dialog
+        try:
+            self.root.wait_window(dialog.window)
+            return dialog.result
+        finally:
+            self.login_dialog = None
+
+    def _open_qr_dialog(self, cancelled):
+        if self.closing:
+            raise asyncio.CancelledError()
+        dialog = QRLoginDialog(self, lambda: self.loop.call_soon_threadsafe(cancelled.set))
+        self.login_dialog = dialog
+        return dialog
+
+    def _finish_qr_dialog(self, dialog):
+        dialog.finish()
+        if getattr(self, "login_dialog", None) is dialog:
+            self.login_dialog = None
+
+    async def _authenticate_qr(self, client):
+        cancelled = asyncio.Event()
+        deadline = time.monotonic() + QR_LOGIN_TIMEOUT
+        dialog = await self._request_ui(lambda: self._open_qr_dialog(cancelled))
+        wait_task = None
+        scan_task = None
+        scanned = asyncio.Event()
+        async def scan_received(_update):
+            scanned.set()
+        client.add_event_handler(scan_received, events.Raw(UpdateLoginToken))
+        cancel_task = asyncio.create_task(cancelled.wait())
+        async def request(awaitable, label):
+            task = asyncio.create_task(self._timed(awaitable, 30, label))
+            try:
+                done, _ = await asyncio.wait((task, cancel_task), timeout=max(0, deadline - time.monotonic()), return_when=asyncio.FIRST_COMPLETED)
+                if task in done:
+                    return await task
+                if cancel_task in done:
+                    raise QRLoginCancelled("已取消扫码登录。")
+                raise RuntimeError("扫码登录等待超过 5 分钟，请重新添加账号。")
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        try:
+            qr = await request(client.qr_login(), "获取登录二维码")
+            while True:
+                if cancelled.is_set():
+                    raise QRLoginCancelled("已取消扫码登录。")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("扫码登录等待超过 5 分钟，请重新添加账号。")
+                lifetime = max(0, (qr.expires - datetime.datetime.now(datetime.timezone.utc)).total_seconds())
+                lifetime = min(lifetime, remaining)
+                # Start Telethon's event listener before exposing the token.
+                scanned.clear()
+                if scan_task and not scan_task.done():
+                    scan_task.cancel()
+                    await asyncio.gather(scan_task, return_exceptions=True)
+                scan_task = asyncio.create_task(scanned.wait())
+                wait_task = asyncio.create_task(qr.wait(timeout=lifetime))
+                await asyncio.sleep(0)
+                await self._request_ui(lambda: dialog.show_code(qr.url, lifetime))
+                done, _ = await asyncio.wait((wait_task, cancel_task, scan_task), timeout=min(remaining, lifetime + 30), return_when=asyncio.FIRST_COMPLETED)
+                if scan_task in done and wait_task not in done and cancel_task not in done:
+                    # Once scanned, bound Telethon's token exchange/DC migration.
+                    done, _ = await asyncio.wait((wait_task, cancel_task), timeout=min(30, max(0, deadline - time.monotonic())), return_when=asyncio.FIRST_COMPLETED)
+                if wait_task in done:
+                    try:
+                        await wait_task
+                        return
+                    except asyncio.TimeoutError:
+                        await self._request_ui(dialog.loading)
+                        if cancelled.is_set():
+                            raise QRLoginCancelled("已取消扫码登录。")
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("扫码登录等待超过 5 分钟，请重新添加账号。")
+                        await request(qr.recreate(), "刷新登录二维码")
+                        continue
+                if cancel_task in done:
+                    raise QRLoginCancelled("已取消扫码登录。")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("扫码登录等待超过 5 分钟，请重新添加账号。")
+                raise RuntimeError("扫码登录请求超时，请检查网络后重试。")
+        except (SessionPasswordNeededError, asyncio.CancelledError, RuntimeError):
+            raise
+        except Exception:
+            # Library exceptions may embed login-token responses; never expose them.
+            raise RuntimeError("扫码登录失败，请检查网络和 API 凭据后重新添加账号。") from None
+        finally:
+            client.remove_event_handler(scan_received)
+            for task in (wait_task, cancel_task, scan_task):
+                if task and not task.done():
+                    task.cancel()
+            await asyncio.gather(*(t for t in (wait_task, cancel_task, scan_task) if t), return_exceptions=True)
+            await self._request_ui(lambda: self._finish_qr_dialog(dialog))
+
+    async def _authenticate(self, client, method="phone"):
         if await self._timed(client.is_user_authorized(), 30, "验证账号会话"):
             return
+        if method == "qr":
+            try:
+                await self._authenticate_qr(client)
+                return
+            except SessionPasswordNeededError:
+                await self._authenticate_password(client)
+                return
         phone = await self._request_ui(
             lambda: self._ask_required("账号登录", "请输入手机号（含国家区号，例如 +8613800000000）：")
         )
@@ -1428,6 +1677,9 @@ class CleanupApp:
                 raise RuntimeError("登录验证码已过期，请重新添加账号并获取新验证码。") from exc
             except SessionPasswordNeededError:
                 break
+        await self._authenticate_password(client)
+
+    async def _authenticate_password(self, client):
         for attempt in range(3):
             password = await self._request_ui(
                 lambda: self._ask_required("两步验证", "请输入 Telegram 两步验证密码：", secret=True)
@@ -1455,6 +1707,7 @@ class CleanupApp:
         delete_on_auth_failure=False,
         allow_authentication=False,
         new_account=None,
+        authentication_method="phone",
     ):
         if self.client:
             error = await self._release_client(self.client)
@@ -1477,7 +1730,10 @@ class CleanupApp:
                 await self._delete_session_files(session_path)
                 raise StoredSessionInvalidError("该账号的登录会话已失效，已删除空 session 和账号记录；请重新添加账号。")
             if not authorized:
-                await self._authenticate(client)
+                if authentication_method == "phone":
+                    await self._authenticate(client)
+                else:
+                    await self._authenticate(client, authentication_method)
             auth_completed = True
             if new_account is not None:
                 # Persist authorization independently of preview loading/cancellation.
@@ -1488,10 +1744,28 @@ class CleanupApp:
                     await registration
                     raise
         except BaseException:
+            if authentication_method == "qr" and client and not auth_completed and new_account is not None:
+                uncertain = False
+                try:
+                    auth_completed = bool(await asyncio.shield(self._timed(client.get_me(), 30, "核对扫码授权状态")))
+                except Exception:
+                    # Keep a retryable registry entry when authorization is unknown.
+                    uncertain = True
+                    auth_completed = True
+                if auth_completed:
+                    callback = (lambda: self._register_authorized_account(new_account, authorized=False)) if uncertain else (lambda: self._register_authorized_account(new_account))
+                    registration = asyncio.create_task(self._request_ui(callback))
+                    try:
+                        await asyncio.shield(registration)
+                    except asyncio.CancelledError:
+                        await registration
+                    self._log("扫码账号的会话已保留登记，请稍后重新连接核对状态。")
             release_error = await self._release_client(client) if client else None
             if delete_on_auth_failure and not auth_completed:
                 if not release_error:
                     await self._delete_session_files(session_path)
+            if authentication_method == "qr" and release_error:
+                raise RuntimeError("扫码登录已停止，但连接未安全释放，会话文件已保留。请重试关闭程序后再添加账号。") from None
             raise
 
         label = "已登录账号（信息待刷新）"
