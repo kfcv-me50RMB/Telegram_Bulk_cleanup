@@ -1,10 +1,47 @@
 import asyncio
 import json
 import sqlite3
-import time
 from pathlib import Path
 from tkinter import messagebox
-from .constants import BASE_DIR, CONFIG_PATH, LEGACY_SESSION_PATH, SESSIONS_DIR
+from .constants import BASE_DIR, CONFIG_PATH, LEGACY_CONFIG_PATH, LEGACY_SESSION_PATH, SESSIONS_DIR
+
+
+def read_config(path):
+    """Read existing metadata only; never create a database during reading."""
+    connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        settings = dict(connection.execute("SELECT key, value FROM settings"))
+        accounts = [dict(zip(("id", "session", "label", "user_id"), row)) for row in
+                    connection.execute("SELECT id, session, label, user_id FROM accounts ORDER BY position")]
+        return {**settings, "accounts": accounts}
+    finally:
+        connection.close()
+
+
+def write_config(path, config):
+    """Replace metadata atomically with a short-lived, thread-local connection."""
+    new_database = not path.exists()
+    target = path.with_name(path.name + ".tmp") if new_database else path
+    connection = sqlite3.connect(target, timeout=5)
+    succeeded = False
+    try:
+        with connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+            connection.execute("CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, session TEXT NOT NULL UNIQUE, label TEXT NOT NULL, user_id TEXT NOT NULL, position INTEGER NOT NULL)")
+            connection.execute("DELETE FROM settings")
+            connection.executemany("INSERT INTO settings VALUES (?, ?)",
+                                   [(key, config.get(key)) for key in ("api_id", "api_hash", "selected_account")])
+            connection.execute("DELETE FROM accounts")
+            connection.executemany("INSERT INTO accounts VALUES (?, ?, ?, ?, ?)",
+                                   [(item["id"], item["session"], item["label"], str(item.get("user_id", "")), index)
+                                    for index, item in enumerate(config["accounts"])])
+        succeeded = True
+    finally:
+        connection.close()
+        if new_database and not succeeded:
+            target.unlink(missing_ok=True)
+    if new_database:
+        target.replace(path)
 
 
 class StorageMixin:
@@ -12,17 +49,19 @@ class StorageMixin:
 
     def _load_config(self):
         config = {}
-        if CONFIG_PATH.exists():
-            try:
-                config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            except (OSError, ValueError, TypeError) as exc:
-                backup = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.corrupt-{int(time.time())}")
-                try:
-                    CONFIG_PATH.replace(backup)
-                    backup_note = f"\n原文件已保留为：{backup.name}"
-                except OSError:
-                    backup_note = ""
-                messagebox.showwarning("配置读取失败", f"无法读取本地配置：\n{exc}{backup_note}")
+        migrating = False
+        self._config_read_failed = False
+        try:
+            if CONFIG_PATH.exists():
+                config = read_config(CONFIG_PATH)
+            elif LEGACY_CONFIG_PATH.exists():
+                config = json.loads(LEGACY_CONFIG_PATH.read_text(encoding="utf-8"))
+                if not isinstance(config, dict):
+                    raise ValueError("旧配置格式无效")
+                migrating = True
+        except (OSError, ValueError, TypeError, sqlite3.Error) as exc:
+            self._config_read_failed = True
+            messagebox.showwarning("配置读取失败", f"无法读取本地配置，原文件已保留；修复后请重新启动。\n{exc}")
         if not isinstance(config, dict):
             config = {}
         self.api_id.set(str(config.get("api_id", "")))
@@ -89,7 +128,7 @@ class StorageMixin:
                 except (OSError, RuntimeError):
                     pass
         self._refresh_account_list(config.get("selected_account"))
-        if registry_changed:
+        if registry_changed or migrating:
             try:
                 self._save_config()
             except OSError as exc:
@@ -112,9 +151,12 @@ class StorageMixin:
             "selected_account": selected,
             "accounts": self.accounts,
         }
-        temporary = CONFIG_PATH.with_name(f"{CONFIG_PATH.name}.tmp")
-        temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(CONFIG_PATH)
+        if getattr(self, "_config_read_failed", False):
+            raise OSError("配置读取失败，已阻止覆盖原数据；请修复后重新启动。")
+        try:
+            write_config(CONFIG_PATH, config)
+        except sqlite3.Error as exc:
+            raise OSError(f"无法写入本地配置数据库：{exc}") from exc
 
     def _session_path(self, account):
         path = (BASE_DIR / account["session"]).resolve()

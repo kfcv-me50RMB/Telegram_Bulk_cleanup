@@ -49,7 +49,9 @@ python -m venv .venv
 
 打开 [Telegram API 管理页面](https://my.telegram.org)，登录后在 **API development tools** 中创建应用，取得 `API ID` 和 `API Hash`，填写到左侧输入框。
 
-凭据以明文保存在本机 `.tg_cleanup_config.json`，请勿分享。
+配置使用 Python 标准库 `sqlite3` 存储。首次启动时自动迁移旧 `.tg_cleanup_config.json` 中的凭据与账号登记，成功后以 SQLite 为准；旧文件保留作为备份，仍包含敏感信息，请勿分享。迁移失败时保留原文件并提示，修复后重新启动。Telegram 会话文件保持原样。
+
+凭据以明文保存在本机 `.tg_cleanup_config.sqlite3`，SQLite 不提供加密保护，请勿分享数据库及其附属文件。
 
 ### 2. 添加账号
 
@@ -113,7 +115,8 @@ python -m venv .venv
 
 | 路径 | 内容 |
 | --- | --- |
-| `.tg_cleanup_config.json` | API 凭据、账号登记及选择记录 |
+| `.tg_cleanup_config.sqlite3` | API 凭据、账号登记及当前账号选择记录（不保存清理勾选状态） |
+| `.tg_cleanup_config.json` | 迁移后保留的旧配置备份，包含敏感信息 |
 | `sessions/` | 各账号的 Telegram 登录会话及数据库附属文件 |
 | `tg_cleanup_session.session` | 旧版本会话，启动时会尝试迁移登记 |
 
@@ -141,7 +144,7 @@ python -m venv .venv
 
 ### 不安装 Python 可以运行吗？
 
-可以。Windows 用户可将已打包的 `TelegramCleanup.exe` 放入有写入权限的文件夹并双击运行，无需安装 Python。配置文件 `.tg_cleanup_config.json` 和 `sessions/` 会保存在 EXE 所在目录。分发时仅发送 EXE，不要发送自己的配置或会话文件。
+可以。Windows 用户可将已打包的 `TelegramCleanup.exe` 放入有写入权限的文件夹并双击运行，无需安装 Python。配置文件 `.tg_cleanup_config.sqlite3` 和 `sessions/` 会保存在 EXE 所在目录。分发时仅发送 EXE，不要发送自己的配置或会话文件。
 
 ### 提示“账号会话不可用”怎么办？
 
@@ -191,7 +194,7 @@ python -m venv .venv
 
 ## Windows EXE（无需 Python）
 
-将 `dist/TelegramCleanup.exe` 复制到有写入权限的文件夹，双击运行，无需安装 Python。配置文件 `.tg_cleanup_config.json` 和 `sessions/` 会保存在 EXE 所在目录，升级时替换 EXE 即可。分发时仅发送 EXE，不要发送自己的配置或会话文件。
+将 `dist/TelegramCleanup.exe` 复制到有写入权限的文件夹，双击运行，无需安装 Python。配置文件 `.tg_cleanup_config.sqlite3` 和 `sessions/` 会保存在 EXE 所在目录，升级时替换 EXE 即可。分发时仅发送 EXE，不要发送自己的配置或会话文件。
 
 重新打包：安装 Python 后执行 `build_exe.bat`。脚本会创建独立的 `.build-venv` 环境并安装固定的应用依赖与 PyInstaller，然后生成 EXE。首次打包需要联网下载依赖。
 

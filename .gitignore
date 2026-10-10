@@ -34,3 +34,5 @@ dist/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+.tg_cleanup_config.sqlite3*

@@ -859,7 +859,7 @@ class SessionStatusTests(unittest.TestCase):
         config = Mock()
         config.exists.return_value = True
         app._session_status = Mock(side_effect=["corrupt", "unreadable"])
-        with patch.object(storage, "CONFIG_PATH", config), patch.object(storage.json, "loads", return_value={"accounts": accounts, "keep_account_on_logout": False}), patch.object(storage, "LEGACY_SESSION_PATH") as legacy:
+        with patch.object(storage, "CONFIG_PATH", config), patch.object(storage, "read_config", return_value={"accounts": accounts, "keep_account_on_logout": False}), patch.object(storage, "LEGACY_SESSION_PATH") as legacy:
             legacy.with_suffix.return_value.exists.return_value = False
             app._load_config()
         self.assertEqual(app.accounts, accounts)

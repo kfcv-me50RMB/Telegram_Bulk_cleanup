@@ -21,7 +21,7 @@ from cleanup_app.app import CleanupApp
 class ModuleTests(unittest.TestCase):
     def test_source_paths_remain_at_project_root(self):
         self.assertEqual(constants.BASE_DIR, ROOT)
-        self.assertEqual(constants.CONFIG_PATH, ROOT / ".tg_cleanup_config.json")
+        self.assertEqual(constants.CONFIG_PATH, ROOT / ".tg_cleanup_config.sqlite3")
         self.assertEqual(constants.SESSIONS_DIR, ROOT / "sessions")
         self.assertEqual(constants.LEGACY_SESSION_PATH, ROOT / "tg_cleanup_session")
 
@@ -31,7 +31,7 @@ class ModuleTests(unittest.TestCase):
             with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(executable)):
                 values = runpy.run_path(str(ROOT / "cleanup_app" / "constants.py"))
             self.assertEqual(values["BASE_DIR"], executable.parent)
-            self.assertEqual(values["CONFIG_PATH"], executable.parent / ".tg_cleanup_config.json")
+            self.assertEqual(values["CONFIG_PATH"], executable.parent / ".tg_cleanup_config.sqlite3")
             self.assertEqual(values["SESSIONS_DIR"], executable.parent / "sessions")
 
     def test_session_path_boundary_with_temporary_directory(self):
