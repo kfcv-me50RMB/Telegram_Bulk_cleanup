@@ -165,6 +165,7 @@ python -m venv .venv
 
 ```powershell
 .\.venv\Scripts\python.exe -m py_compile tg_cleanup.py
+.\.venv\Scripts\python.exe -m compileall -q cleanup_app
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe tests/preview_ui.py
 ```
@@ -193,3 +194,20 @@ python -m venv .venv
 将 `dist/TelegramCleanup.exe` 复制到有写入权限的文件夹，双击运行，无需安装 Python。配置文件 `.tg_cleanup_config.json` 和 `sessions/` 会保存在 EXE 所在目录，升级时替换 EXE 即可。分发时仅发送 EXE，不要发送自己的配置或会话文件。
 
 重新打包：安装 Python 后执行 `build_exe.bat`。脚本会创建独立的 `.build-venv` 环境并安装固定的应用依赖与 PyInstaller，然后生成 EXE。首次打包需要联网下载依赖。
+
+## 代码结构
+
+`tg_cleanup.py` 保留启动入口及应用类、弹窗类和异常类型的兼容导出。`cleanup_app/` 按职责组织，应用类通过 Mixin 组合现有方法，共享状态统一在 `app.py` 初始化。
+
+| 模块 | 职责 |
+| --- | --- |
+| `app.py` | 应用组合与初始化 |
+| `constants.py`、`models.py` | 路径、常量、清理快照与异常 |
+| `instance.py` | Windows 单实例锁 |
+| `dialogs.py`、`ui.py` | 登录弹窗、主界面与显示状态 |
+| `storage.py` | 配置读写、旧会话迁移与本地 session 管理 |
+| `accounts.py` | 账号选择、认证、连接与注销 |
+| `cleanup.py` | 预览选择、确认、清理与结果处理 |
+| `background.py` | 后台事件循环、任务调度与退出释放 |
+
+源码运行时数据仍保存在项目根目录，EXE 运行时保存在 EXE 所在目录。模块导入不会启动窗口或连接 Telegram。测试需要 mock 依赖时，应指向使用该依赖的模块。

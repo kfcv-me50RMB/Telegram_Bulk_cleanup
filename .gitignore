@@ -1,6 +1,15 @@
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+.verification-deps/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 .tg_cleanup_config.json*
 *.session
 *.session-journal
@@ -12,3 +21,16 @@ build/
 dist/
 *.spec
 .build-venv/
+
+# Local environment variables and editor/OS artifacts
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

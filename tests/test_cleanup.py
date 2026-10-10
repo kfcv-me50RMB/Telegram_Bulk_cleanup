@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+import queue
 import sys
 import threading
 import time
@@ -15,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 # The bundled verification interpreter can reuse the project's pure-Python deps.
 sys.path.append(str(ROOT / ".venv" / "Lib" / "site-packages"))
 import tg_cleanup as app_module
+from cleanup_app import accounts, background, cleanup, storage, ui
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.messages import DeleteHistoryRequest
 from telethon.tl.functions.auth import LogOutRequest
@@ -206,7 +208,7 @@ class QRTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_total_timeout_and_existing_authorization(self):
         app, client, qr, dialog, active = self.setup_qr()
-        with patch.object(app_module, "QR_LOGIN_TIMEOUT", 0), self.assertRaises(RuntimeError):
+        with patch.object(accounts, "QR_LOGIN_TIMEOUT", 0), self.assertRaises(RuntimeError):
             await app._authenticate_qr(client)
         app._finish_qr_dialog.assert_called_once()
         client.is_user_authorized.return_value = True
@@ -229,7 +231,7 @@ class QRTests(unittest.IsolatedAsyncioTestCase):
         app._authenticate = AsyncMock(side_effect=asyncio.CancelledError())
         app._register_authorized_account = Mock()
         account = {"id": "new", "session": "sessions/demo", "label": "Demo"}
-        with patch.object(app_module, "TelegramClient", return_value=client), self.assertRaises(asyncio.CancelledError):
+        with patch.object(accounts, "TelegramClient", return_value=client), self.assertRaises(asyncio.CancelledError):
             await app._prepare(1, "demo", Path("demo"), delete_on_auth_failure=True, allow_authentication=True, new_account=account, authentication_method="qr")
         app._register_authorized_account.assert_called_once_with(account, authorized=False)
         app._delete_session_files.assert_not_awaited()
@@ -241,7 +243,7 @@ class QRTests(unittest.IsolatedAsyncioTestCase):
         account = {"id": "new", "session": "sessions/demo", "label": "Demo"}
         app._authenticate = AsyncMock(side_effect=asyncio.CancelledError())
         app._register_authorized_account = Mock()
-        with patch.object(app_module, "TelegramClient", return_value=client), self.assertRaises(asyncio.CancelledError):
+        with patch.object(accounts, "TelegramClient", return_value=client), self.assertRaises(asyncio.CancelledError):
             await app._prepare(1, "demo", Path("demo"), delete_on_auth_failure=True, allow_authentication=True, new_account=account, authentication_method="qr")
         app._register_authorized_account.assert_called_once_with(account)
         app._delete_session_files.assert_not_awaited()
@@ -287,13 +289,13 @@ class LoginTests(unittest.IsolatedAsyncioTestCase):
         app.root = Mock()
         app.closing = False
         dialog = SimpleNamespace(window=Mock(), result=" password ")
-        with patch.object(app_module, "LoginDialog", return_value=dialog) as factory:
+        with patch.object(accounts, "LoginDialog", return_value=dialog) as factory:
             self.assertEqual(app._ask_required("两步验证", "prompt", secret=True), " password ")
             factory.assert_called_once_with(app, "password")
         self.assertIsNone(dialog.result)
         self.assertIsNone(app.login_dialog)
         dialog.result = None
-        with patch.object(app_module, "LoginDialog", return_value=dialog), self.assertRaises(RuntimeError):
+        with patch.object(accounts, "LoginDialog", return_value=dialog), self.assertRaises(RuntimeError):
             app._ask_required("账号登录", "prompt")
 
     async def test_cancel_prevents_sending_code(self):
@@ -540,7 +542,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
 
         app = make_app(FakeClient([hang]))
         app.private_users = [dialog(2)]
-        with patch.object(app_module, "CLEANUP_TIMEOUT", 0.01):
+        with patch.object(cleanup, "CLEANUP_TIMEOUT", 0.01):
             result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         self.assertTrue(started.is_set())
         self.assertTrue(cancelled.is_set())
@@ -559,7 +561,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         app = make_app(client)
         app.private_users = [dialog(2)]
         clock = SimpleNamespace(monotonic=Mock(side_effect=[10, 10, 10, 10, 13]))
-        with patch.object(app_module, "time", clock), patch.object(app_module.asyncio, "sleep", new=AsyncMock()) as sleep:
+        with patch.object(cleanup, "time", clock), patch.object(app_module.asyncio, "sleep", new=AsyncMock()) as sleep:
             result = await app._cleanup(app_module.CleanupSelection(app.current_account_id, tuple(app.groups), tuple(app.private_users), tuple(app.contacts)))
         sleep.assert_awaited_once()
         self.assertEqual(len(result["success"]), 1)
@@ -649,7 +651,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client = FakeClient(dialogs=[dialog(1, is_self=True), dialog(2, deleted=True)])
         app = make_app()
         account = {"id": "new", "session": "sessions/new", "label": "New"}
-        with patch.object(app_module, "TelegramClient", return_value=client) as constructor:
+        with patch.object(accounts, "TelegramClient", return_value=client) as constructor:
             result = await app._prepare(1, "hash", Path("unused"), allow_authentication=True, new_account=account)
         self.assertIn(account, app.accounts)
         app._save_config.assert_called_once_with("new")
@@ -670,7 +672,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
             return function()
 
         app._request_ui = ui
-        with patch.object(app_module, "TelegramClient", return_value=client):
+        with patch.object(accounts, "TelegramClient", return_value=client):
             task = asyncio.create_task(app._prepare(1, "hash", Path("unused"), allow_authentication=True, new_account=account))
             await entered.wait()
             task.cancel()
@@ -687,7 +689,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         app._save_config.side_effect = OSError("read only")
         client = FakeClient()
         account = {"id": "new", "session": "sessions/new", "label": "New"}
-        with patch.object(app_module, "TelegramClient", return_value=client), patch.object(app_module.messagebox, "showwarning") as warning:
+        with patch.object(accounts, "TelegramClient", return_value=client), patch.object(app_module.messagebox, "showwarning") as warning:
             await app._prepare(1, "hash", Path("unused"), allow_authentication=True, new_account=account)
         self.assertIn(account, app.accounts)
         warning.assert_called_once()
@@ -732,7 +734,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         app = make_app(client)
         other = FakeClient()
         app._read_session_status = Mock(return_value="valid")
-        with patch.object(app_module, "TelegramClient", return_value=other):
+        with patch.object(accounts, "TelegramClient", return_value=other):
             result = await app._logout_account({"id": "other"}, Path("unused"), (1, "hash"))
         self.assertTrue(result["deleted"])
         self.assertTrue(client.connected)
@@ -773,7 +775,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         for status in ("missing", "empty", "corrupt", "unreadable", "busy"):
             app = make_app()
             app._read_session_status = Mock(return_value=status)
-            with patch.object(app_module, "TelegramClient") as factory:
+            with patch.object(accounts, "TelegramClient") as factory:
                 result = await app._logout_account({"id": "other"}, Path("unused"), None)
             factory.assert_not_called()
             self.assertEqual(result["deleted"], status in ("missing", "empty"))
@@ -805,7 +807,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         previous = FakeClient()
         replacement = FakeClient()
         app = make_app(previous)
-        with patch.object(app_module, "TelegramClient", return_value=replacement):
+        with patch.object(accounts, "TelegramClient", return_value=replacement):
             await app._prepare(1, "hash", Path("unused"), allow_authentication=False)
         self.assertTrue(previous.session.closed)
         self.assertEqual(previous.requests, [])
@@ -823,7 +825,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         client.disconnect_error = None
         replacement = FakeClient()
         app._read_session_status = Mock(return_value="valid")
-        with patch.object(app_module, "TelegramClient", return_value=replacement):
+        with patch.object(accounts, "TelegramClient", return_value=replacement):
             result = await app._logout_account({"id": "account"}, Path("unused"), (1, "hash"))
         self.assertTrue(result["deleted"])
         self.assertEqual(len(client.requests), 1)
@@ -840,7 +842,7 @@ class SessionStatusTests(unittest.TestCase):
         for error, expected in [(sqlite3.OperationalError("unable to open database file"), "unreadable"),
                                 (sqlite3.OperationalError("database is locked"), "busy"),
                                 (sqlite3.DatabaseError("file is not a database"), "corrupt")]:
-            with self.subTest(expected=expected), patch.object(app_module.sqlite3, "connect", side_effect=error):
+            with self.subTest(expected=expected), patch.object(storage.sqlite3, "connect", side_effect=error):
                 self.assertEqual(app._read_session_status({}), expected)
 
     def test_unreadable_and_corrupt_registry_entries_survive_loading(self):
@@ -857,7 +859,7 @@ class SessionStatusTests(unittest.TestCase):
         config = Mock()
         config.exists.return_value = True
         app._session_status = Mock(side_effect=["corrupt", "unreadable"])
-        with patch.object(app_module, "CONFIG_PATH", config), patch.object(app_module.json, "loads", return_value={"accounts": accounts, "keep_account_on_logout": False}), patch.object(app_module, "LEGACY_SESSION_PATH") as legacy:
+        with patch.object(storage, "CONFIG_PATH", config), patch.object(storage.json, "loads", return_value={"accounts": accounts, "keep_account_on_logout": False}), patch.object(storage, "LEGACY_SESSION_PATH") as legacy:
             legacy.with_suffix.return_value.exists.return_value = False
             app._load_config()
         self.assertEqual(app.accounts, accounts)
@@ -919,7 +921,7 @@ class InterfaceLifecycleTests(unittest.TestCase):
         self.root = FakeRoot()
         self.app = make_app()
         self.app.root = self.root
-        self.app.ui_requests = app_module.queue.Queue()
+        self.app.ui_requests = queue.Queue()
         self.app.busy = False
         self.app.connected = False
         self.app.preview_loaded = False
@@ -1020,7 +1022,7 @@ class InterfaceLifecycleTests(unittest.TestCase):
         self.app.connected = True
         self.app._set_busy(True, "Running")
         result = {"success": ["Done"], "failed": [], "unknown": [], "unexecuted": [], "stop_reason": None, "disconnect_error": None}
-        with patch.object(app_module.tk, "Toplevel"), patch.object(app_module.ttk, "Label"), patch.object(app_module.ttk, "Button"), patch.object(app_module, "ScrolledText") as details:
+        with patch.object(app_module.tk, "Toplevel"), patch.object(app_module.ttk, "Label"), patch.object(app_module.ttk, "Button"), patch.object(ui, "ScrolledText") as details:
             self.app._cleanup_finished(result)
             self.assertTrue(any("Done" in call.args[1] for call in details.return_value.insert.call_args_list))
         self.assertEqual(str(self.app.stop_button["state"]), "disabled")

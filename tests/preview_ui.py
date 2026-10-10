@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.append(str(ROOT / ".venv" / "Lib" / "site-packages"))
 import tg_cleanup as module
+from telethon.tl.types import Chat, User
 
 
 def capture_window(window, path):
@@ -175,10 +176,10 @@ def preview(output_dir=None):
         app.current_account_id = "demo"
         app.selected_items = set()
         app.selection_rows = {}
-        app.groups = [(SimpleNamespace(entity=module.Chat(id=i, photo=None, participants_count=0, date=None, version=0, title="演示群组 " + str(i) + " 很长的群组名称" * 3)), "群组") for i in range(1, 25)]
-        app.private_users = [SimpleNamespace(entity=module.User(id=i, first_name="同名演示用户", username="demo_user_" + str(i))) for i in range(1, 187)]
-        app.private_users.append(SimpleNamespace(entity=module.User(id=9999, first_name="Saved Messages", is_self=True)))
-        app.contacts = [module.User(id=i, first_name="演示联系人") for i in range(1, 1251)]
+        app.groups = [(SimpleNamespace(entity=Chat(id=i, photo=None, participants_count=0, date=None, version=0, title="演示群组 " + str(i) + " 很长的群组名称" * 3)), "群组") for i in range(1, 25)]
+        app.private_users = [SimpleNamespace(entity=User(id=i, first_name="同名演示用户", username="demo_user_" + str(i))) for i in range(1, 187)]
+        app.private_users.append(SimpleNamespace(entity=User(id=9999, first_name="Saved Messages", is_self=True)))
+        app.contacts = [User(id=i, first_name="演示联系人") for i in range(1, 1251)]
         for name in ("api_id", "api_hash", "selected_account", "account_text", "group_count", "dialog_count", "contact_count", "status_text"):
             setattr(app, name, module.tk.StringVar(root, value=""))
         # Override every business callback before constructing the widgets.
