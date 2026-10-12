@@ -52,12 +52,30 @@ class BackgroundMixin:
         """Fire-and-forget UI work from the event loop thread."""
         self.ui_requests.put((function, Future()))
 
+    # Log line tags are configured by the UI; unmatched lines stay plain.
+    LOG_TAGS = (
+        ("error", ("失败", "错误", "无法", "超时")),
+        ("warn", ("限流", "等待", "取消", "重试")),
+        ("ok", ("完成", "成功", "已连接", "已加载")),
+    )
+
+    @classmethod
+    def _log_tag(cls, text):
+        for tag, keywords in cls.LOG_TAGS:
+            if any(keyword in text for keyword in keywords):
+                return tag
+        return None
+
     def _log(self, text):
         if self.closing:
             return
+        tag = self._log_tag(text)
         def append():
             self.log.configure(state="normal")
-            self.log.insert("end", text + "\n")
+            if tag:
+                self.log.insert("end", text + "\n", tag)
+            else:
+                self.log.insert("end", text + "\n")
             self.log.see("end")
             self.log.configure(state="disabled")
 

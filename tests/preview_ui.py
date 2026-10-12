@@ -72,10 +72,12 @@ def preview_qr(output_dir=None):
         app._configure_styles()
         root.update()
         choice = module.LoginMethodDialog(app)
+        assert choice.window.cget("background").lower() == app.colors["background"].lower()
         choice.finish("qr")
         assert choice.closed and choice.result == "qr"
         on_cancel = Mock()
         dialog = module.QRLoginDialog(app, on_cancel, demo=True)
+        assert dialog.window.cget("background").lower() == app.colors["background"].lower()
         root.update()
         assert dialog.image is None
         dialog.show_code("https://example.invalid/qr-demo-not-for-login", 30)
@@ -108,6 +110,7 @@ def preview_login(output_dir=None):
         root.update()
         for kind, value in (("phone", "+86 138-0000-0000"), ("code", "123456"), ("password", " demo password ")):
             dialog = module.LoginDialog(app, kind)
+            assert dialog.window.cget("background").lower() == app.colors["background"].lower()
             dialog.submit()
             root.update()
             assert dialog.error.get() and not dialog.closed
@@ -186,6 +189,13 @@ def preview(output_dir=None):
         for name in ("_login_selected", "_add_account", "_logout_selected", "_confirm_cleanup", "_stop_cleanup", "_credentials_changed", "_account_selection_changed"):
             setattr(app, name, Mock())
         app._build_ui()
+        # The status dot and log colors are derived from the shared tokens.
+        assert abs(app.ui_scale - scale) < 0.01, (app.ui_scale, scale)
+        for text, tone in (("账号已连接，预览已加载", "green"), ("正在执行清理……", "amber"), ("清理失败：网络错误", "red"), ("请选择账号并登录。", "faint")):
+            app.status_text.set(text)
+            assert app.status_indicator.itemcget(app.status_dot, "fill") == app.colors[tone], (text, app.status_indicator.itemcget(app.status_dot, "fill"))
+        for tag, tone in (("ok", "green"), ("warn", "amber"), ("error", "red")):
+            assert app.log.tag_cget(tag, "foreground") == app.colors[tone]
         app.api_id.set("123456")
         app.api_hash.set("DEMO_ONLY_NOT_REAL_CREDENTIALS")
         root.update()

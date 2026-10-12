@@ -980,8 +980,9 @@ class InterfaceLifecycleTests(unittest.TestCase):
         self.app.connected = False
         self.app.preview_loaded = False
         self.app.session_issues = {}
-        self.app.colors = {"background": "#F3F6FA", "surface": "#FFFFFF", "text": "#172B4D", "border": "#DFE7F0", "blue": "#229ED9", "red": "#D64545"}
+        self.app.colors = {"background": "#F3F6FA", "surface": "#FFFFFF", "text": "#172B4D", "border": "#DFE7F0", "blue": "#229ED9", "red": "#D64545", "blue_soft": "#E6F3FB"}
         self.app.fonts = {"section": ("Arial", 12), "log": ("Arial", 10)}
+        self.app.ui_scale = 1.0
         for name in ("status_text", "account_text", "group_count", "dialog_count", "contact_count", "selected_account"):
             setattr(self.app, name, FakeVariable())
         for name in ("login_button", "add_button", "logout_button", "api_id_entry", "api_hash_entry", "account_combo", "execute_button", "stop_button"):

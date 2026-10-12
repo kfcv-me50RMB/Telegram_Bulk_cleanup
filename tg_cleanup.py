@@ -10,10 +10,12 @@ from cleanup_app.app import CleanupApp
 from cleanup_app.constants import SHUTDOWN_TIMEOUT
 from cleanup_app.dialogs import LoginDialog, LoginMethodDialog, QRLoginDialog
 from cleanup_app.models import CleanupSelection, CleanupStopped, StoredSessionInvalidError, QRLoginCancelled
-from cleanup_app.instance import SingleInstance
+from cleanup_app.instance import SingleInstance, enable_dpi_awareness
 
 
 def main():
+    # Must precede the first Tk window so text stays crisp on scaled displays.
+    enable_dpi_awareness()
     instance = SingleInstance()
     if not instance.acquired:
         root = tk.Tk()

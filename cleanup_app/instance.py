@@ -3,6 +3,24 @@ from ctypes import wintypes
 from .constants import INSTANCE_MUTEX_NAME
 
 
+def enable_dpi_awareness():
+    """Render the GUI crisply on scaled displays; a no-op when unsupported.
+
+    System-DPI awareness is enough for a single display: Tk then draws at the
+    monitor's real DPI instead of letting Windows stretch a bitmap of the
+    window. Must run before the first ``tk.Tk()`` and is safe to call twice.
+    """
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass
+
+
 class SingleInstance:
     """Process-wide Windows mutex preventing concurrent SQLite session access."""
 

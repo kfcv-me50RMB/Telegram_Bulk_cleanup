@@ -17,10 +17,15 @@ class CleanupApp(UiMixin, StorageMixin, AccountsMixin, CleanupMixin, BackgroundM
     def __init__(self, root):
         self.root = root
         self.root.title("Telegram 批量清理")
-        width = max(860, min(1000, self.root.winfo_screenwidth() - 80))
-        height = max(640, min(760, self.root.winfo_screenheight() - 100))
+        # Window sizes are in real pixels; scale them so a DPI-aware window
+        # occupies the same apparent area it did before, and never exceed the
+        # screen on small displays.
+        scale = self._ui_scale(root)
+        screen_width, screen_height = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        width = min(max(int(860 * scale), min(int(1000 * scale), screen_width - int(80 * scale))), screen_width - 20)
+        height = min(max(int(640 * scale), min(int(760 * scale), screen_height - int(100 * scale))), screen_height - 20)
         self.root.geometry(f"{width}x{height}")
-        self.root.minsize(860, 640)
+        self.root.minsize(min(int(860 * scale), width), min(int(640 * scale), height))
 
         self.ui_requests = queue.Queue()
         self.loop = asyncio.new_event_loop()
