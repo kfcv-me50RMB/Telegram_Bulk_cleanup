@@ -9,7 +9,7 @@ from telethon.errors import PasswordHashInvalidError, PhoneCodeExpiredError, Pho
 from telethon.tl.functions.auth import LogOutRequest
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.types import Channel, Chat, User, UpdateLoginToken
-from .constants import SESSIONS_DIR, QR_LOGIN_TIMEOUT
+from .constants import DIALOG_LOAD_TIMEOUT, QR_LOGIN_TIMEOUT, RPC_TIMEOUT, SESSIONS_DIR
 from .models import StoredSessionInvalidError, QRLoginCancelled
 from .dialogs import LoginDialog, LoginMethodDialog, QRLoginDialog
 
@@ -24,7 +24,7 @@ class AccountsMixin:
             self.selected_account.set("")
             self._update_account_buttons()
             return
-        index = next((i for i, account in enumerate(self.accounts) if account["id"] == select_id), 0)
+        index = next((i for i, account in enumerate(self.accounts) if account.get("id") == select_id), 0)
         self.account_combo.current(index)
         self._update_account_buttons()
 
@@ -155,7 +155,7 @@ class AccountsMixin:
         return True
 
     def _remove_stale_account(self, account, reason):
-        self.accounts = [item for item in self.accounts if item["id"] != account["id"]]
+        self.accounts = [item for item in self.accounts if item.get("id") != account["id"]]
         if self.current_account_id == account["id"]:
             self.current_account_id = None
         self._clear_preview()
@@ -170,7 +170,11 @@ class AccountsMixin:
 
     def _new_account_connected(self, account, result):
         user_id = str(result["user_id"]) if result["user_id"] else ""
-        duplicate = next((item for item in self.accounts if item["id"] != account["id"] and user_id and item.get("user_id") == user_id), None)
+        duplicate = next(
+            (item for item in self.accounts
+             if item.get("id") != account["id"] and user_id and item.get("user_id") == user_id),
+            None,
+        )
         if duplicate:
             session_path = self._session_path(account)
             self._set_busy(True, "正在清理重复登录……")
@@ -180,7 +184,7 @@ class AccountsMixin:
                 "清理重复账号",
             )
             return
-        if not any(item["id"] == account["id"] for item in self.accounts):
+        if not any(item.get("id") == account["id"] for item in self.accounts):
             self.accounts.append(account)
         self._account_connected(account, result)
 
@@ -199,7 +203,7 @@ class AccountsMixin:
         error = None
         try:
             if client and client.is_connected() and await self._timed(client.is_user_authorized(), 15, "验证重复账号"):
-                await self._timed(client.log_out(), 30, "退出重复账号")
+                await self._timed(client.log_out(), RPC_TIMEOUT, "退出重复账号")
         except Exception as exc:
             error = str(exc)
         finally:
@@ -211,7 +215,7 @@ class AccountsMixin:
         return error
 
     def _duplicate_discarded(self, existing_account, new_account, remote_error):
-        self.accounts = [item for item in self.accounts if item["id"] != new_account["id"]]
+        self.accounts = [item for item in self.accounts if item.get("id") != new_account["id"]]
         self.connected = False
         self.current_account_id = None
         self._clear_preview()
@@ -301,8 +305,10 @@ class AccountsMixin:
         # A failed release may have closed SQLite while leaving the transport
         # alive. Finish releasing that client before constructing a fresh one.
         if client is not None and account_id not in self.revoked_accounts:
-            result["disconnect_error"] = await self._release_client(client)
-            if result["disconnect_error"]:
+            if client in self.pending_release:
+                await self._retry_pending_releases()
+            if client in self.pending_release:
+                result["disconnect_error"] = self.pending_release[client]
                 return result
             self.logout_clients.pop(account_id, None)
             if self.client is client:
@@ -325,11 +331,11 @@ class AccountsMixin:
                         self.clients.add(client)
                     self.logout_clients[account_id] = client
                     if not client.is_connected():
-                        await self._timed(client.connect(), 30, "连接退出账号")
-                    if await self._timed(client.is_user_authorized(), 30, "验证退出账号"):
+                        await self._timed(client.connect(), RPC_TIMEOUT, "连接退出账号")
+                    if await self._timed(client.is_user_authorized(), RPC_TIMEOUT, "验证退出账号"):
                         # Telethon.log_out() also disconnects and deletes files.
                         # Use the RPC directly so those phases stay independent.
-                        if not await self._timed(client(LogOutRequest()), 30, "退出账号"):
+                        if not await self._timed(client(LogOutRequest()), RPC_TIMEOUT, "退出账号"):
                             raise RuntimeError("Telegram 未确认退出登录，请重试。")
                     self.revoked_accounts.add(account_id)
         except Exception as exc:
@@ -364,14 +370,25 @@ class AccountsMixin:
                         session.close()
                 except Exception as exc:
                     error = f"{error or ''} 会话关闭失败：{exc}".strip()
-                if not error:
+                if error:
+                    # A failed release must stay retryable instead of blocking
+                    # every later connect attempt until the process restarts.
                     self.clients.discard(client)
+                    self.pending_release[client] = error
+                else:
+                    self.clients.discard(client)
+                    self.pending_release.pop(client, None)
             return error
 
         task = asyncio.create_task(release())
         self.disconnect_tasks.add(task)
         task.add_done_callback(self.disconnect_tasks.discard)
         return await asyncio.shield(task)
+
+    async def _retry_pending_releases(self):
+        """Retry clients whose disconnect/session close failed earlier."""
+        for client, _error in tuple(self.pending_release.items()):
+            await self._release_client(client)
 
     def _account_logged_out(self, account, result):
         if self.current_account_id == account["id"]:
@@ -390,7 +407,7 @@ class AccountsMixin:
             return
         self.revoked_accounts.discard(account["id"])
         self.session_issues.pop(account["id"], None)
-        self.accounts = [item for item in self.accounts if item["id"] != account["id"]]
+        self.accounts = [item for item in self.accounts if item.get("id") != account["id"]]
         self._refresh_account_list()
         try:
             self._save_config()
@@ -515,7 +532,7 @@ class AccountsMixin:
             await self._request_ui(lambda: self._finish_qr_dialog(dialog))
 
     async def _authenticate(self, client, method="phone"):
-        if await self._timed(client.is_user_authorized(), 30, "验证账号会话"):
+        if await self._timed(client.is_user_authorized(), RPC_TIMEOUT, "验证账号会话"):
             return
         if method == "qr":
             try:
@@ -527,7 +544,7 @@ class AccountsMixin:
         phone = await self._request_ui(
             lambda: self._ask_required("账号登录", "请输入手机号（含国家区号，例如 +8613800000000）：")
         )
-        sent_code = await self._timed(client.send_code_request(phone), 30, "发送登录验证码")
+        sent_code = await self._timed(client.send_code_request(phone), RPC_TIMEOUT, "发送登录验证码")
         for attempt in range(3):
             code = await self._request_ui(lambda: self._ask_required("登录验证码", "请输入 Telegram 登录验证码："))
             try:
@@ -553,7 +570,7 @@ class AccountsMixin:
                 lambda: self._ask_required("两步验证", "请输入 Telegram 两步验证密码：", secret=True)
             )
             try:
-                await self._timed(client.sign_in(password=password), 30, "提交两步验证密码")
+                await self._timed(client.sign_in(password=password), RPC_TIMEOUT, "提交两步验证密码")
                 return
             except PasswordHashInvalidError:
                 if attempt == 2:
@@ -575,6 +592,12 @@ class AccountsMixin:
             if error:
                 raise RuntimeError(error)
             self.client = None
+        if self.pending_release:
+            await self._retry_pending_releases()
+        if self.pending_release:
+            raise RuntimeError(
+                "上一个会话未能安全释放，请重试；仍失败请退出程序后重试。"
+            )
         if self.clients:
             raise RuntimeError("仍有会话未安全释放，请退出程序后重试。")
         client = None
@@ -582,8 +605,8 @@ class AccountsMixin:
         try:
             client = TelegramClient(str(session_path), api_id, api_hash, flood_sleep_threshold=0)
             self.clients.add(client)
-            await self._timed(client.connect(), 30, "连接 Telegram")
-            authorized = await self._timed(client.is_user_authorized(), 30, "验证账号会话")
+            await self._timed(client.connect(), RPC_TIMEOUT, "连接 Telegram")
+            authorized = await self._timed(client.is_user_authorized(), RPC_TIMEOUT, "验证账号会话")
             if not authorized and not allow_authentication:
                 error = await self._release_client(client)
                 if error:
@@ -608,7 +631,7 @@ class AccountsMixin:
             if authentication_method == "qr" and client and not auth_completed and new_account is not None:
                 uncertain = False
                 try:
-                    auth_completed = bool(await asyncio.shield(self._timed(client.get_me(), 30, "核对扫码授权状态")))
+                    auth_completed = bool(await asyncio.shield(self._timed(client.get_me(), RPC_TIMEOUT, "核对扫码授权状态")))
                 except Exception:
                     # Keep a retryable registry entry when authorization is unknown.
                     uncertain = True
@@ -632,12 +655,12 @@ class AccountsMixin:
         label = "已登录账号（信息待刷新）"
         user_id = ""
         try:
-            me = await self._timed(client.get_me(), 30, "读取账号信息")
+            me = await self._timed(client.get_me(), RPC_TIMEOUT, "读取账号信息")
             name = " ".join(value for value in (me.first_name, me.last_name) if value)
             identity = f"@{me.username}" if me.username else (f"+{me.phone}" if me.phone else str(me.id))
             label = f"{name or '未命名账号'} ({identity})"
             user_id = me.id
-            dialogs = await self._timed(client.get_dialogs(), 90, "读取会话列表")
+            dialogs = await self._timed(client.get_dialogs(), DIALOG_LOAD_TIMEOUT, "读取会话列表")
             groups = []
             private_users = []
             for dialog in dialogs:
@@ -648,7 +671,7 @@ class AccountsMixin:
                     groups.append((dialog, "频道/群组"))
                 elif isinstance(entity, User) and not entity.is_self:
                     private_users.append(dialog)
-            contacts_result = await self._timed(client(GetContactsRequest(hash=0)), 30, "读取联系人")
+            contacts_result = await self._timed(client(GetContactsRequest(hash=0)), RPC_TIMEOUT, "读取联系人")
             contacts = [user for user in contacts_result.users if isinstance(user, User)]
             preview_error = None
         except asyncio.CancelledError:

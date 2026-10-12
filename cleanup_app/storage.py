@@ -3,7 +3,13 @@ import json
 import sqlite3
 from pathlib import Path
 from tkinter import messagebox
-from .constants import BASE_DIR, CONFIG_PATH, LEGACY_CONFIG_PATH, LEGACY_SESSION_PATH, SESSIONS_DIR
+from .constants import (BASE_DIR, CONFIG_PATH, LEGACY_CONFIG_PATH, LEGACY_SESSION_PATH,
+                        RELEASE_ATTEMPTS, RELEASE_RETRY_DELAY, SESSIONS_DIR)
+
+
+def _optional_text(value):
+    """SQLite stores NULL for missing text; the UI wants an empty string."""
+    return "" if value is None else str(value)
 
 
 def read_config(path):
@@ -20,6 +26,13 @@ def read_config(path):
 
 def write_config(path, config):
     """Replace metadata atomically with a short-lived, thread-local connection."""
+    # Credentials are never optional, so a missing value is stored as an empty
+    # string instead of NULL (which would read back as the text "None").
+    settings = (
+        ("api_id", _optional_text(config.get("api_id"))),
+        ("api_hash", _optional_text(config.get("api_hash"))),
+        ("selected_account", config.get("selected_account")),
+    )
     new_database = not path.exists()
     target = path.with_name(path.name + ".tmp") if new_database else path
     connection = sqlite3.connect(target, timeout=5)
@@ -29,11 +42,10 @@ def write_config(path, config):
             connection.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
             connection.execute("CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, session TEXT NOT NULL UNIQUE, label TEXT NOT NULL, user_id TEXT NOT NULL, position INTEGER NOT NULL)")
             connection.execute("DELETE FROM settings")
-            connection.executemany("INSERT INTO settings VALUES (?, ?)",
-                                   [(key, config.get(key)) for key in ("api_id", "api_hash", "selected_account")])
+            connection.executemany("INSERT INTO settings VALUES (?, ?)", settings)
             connection.execute("DELETE FROM accounts")
             connection.executemany("INSERT INTO accounts VALUES (?, ?, ?, ?, ?)",
-                                   [(item["id"], item["session"], item["label"], str(item.get("user_id", "")), index)
+                                   [(item["id"], item["session"], item["label"], _optional_text(item.get("user_id")), index)
                                     for index, item in enumerate(config["accounts"])])
         succeeded = True
     finally:
@@ -64,8 +76,8 @@ class StorageMixin:
             messagebox.showwarning("配置读取失败", f"无法读取本地配置，原文件已保留；修复后请重新启动。\n{exc}")
         if not isinstance(config, dict):
             config = {}
-        self.api_id.set(str(config.get("api_id", "")))
-        self.api_hash.set(str(config.get("api_hash", "")))
+        self.api_id.set(_optional_text(config.get("api_id")))
+        self.api_hash.set(_optional_text(config.get("api_hash")))
         raw_accounts = config.get("accounts", [])
         registry_changed = False
         if isinstance(raw_accounts, list):
@@ -210,7 +222,7 @@ class StorageMixin:
     async def _delete_session_files(self, session_path):
         """Delete the SQLite session and sidecars after Telethon releases them."""
         last_errors = []
-        for _attempt in range(5):
+        for _attempt in range(RELEASE_ATTEMPTS):
             last_errors = []
             for candidate in self._session_files(session_path):
                 try:
@@ -220,7 +232,7 @@ class StorageMixin:
             remaining = [candidate.name for candidate in self._session_files(session_path) if candidate.exists()]
             if not remaining:
                 return
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(RELEASE_RETRY_DELAY)
         details = "; ".join(last_errors) or ", ".join(remaining)
         raise RuntimeError(f"本地会话文件删除失败：{details}")
 

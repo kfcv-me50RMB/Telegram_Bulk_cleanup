@@ -50,6 +50,7 @@ class CleanupApp(UiMixin, StorageMixin, AccountsMixin, CleanupMixin, BackgroundM
         self.cleanup_task = None
         self.cleanup_running = False
         self.clients = set()
+        self.pending_release = {}
         self.disconnect_tasks = set()
         self.logout_clients = {}
         self.revoked_accounts = set()

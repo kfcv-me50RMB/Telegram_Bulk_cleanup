@@ -83,6 +83,7 @@ def make_app(client=None):
     app = app_module.CleanupApp.__new__(app_module.CleanupApp)
     app.client = client
     app.clients = {client} if client else set()
+    app.pending_release = {}
     app.disconnect_tasks = set()
     app.logout_clients = {}
     app.revoked_accounts = set()
@@ -449,6 +450,21 @@ class SelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("private", 3), app.selection_rows)
         self.assertIn(("contacts", 2), app.selection_rows)
 
+    async def test_populate_keeps_alternating_row_tags_without_rescanning(self):
+        from telethon.tl.types import Channel
+        app = self.selected_app()
+        app.groups = [(SimpleNamespace(entity=Chat(id=7, title="Same", photo=None, participants_count=0, date=None, version=0)), "群组"),
+                      (SimpleNamespace(entity=Channel(id=8, title="Other", photo=None, date=None)), "频道")]
+        app.contacts = [User(id=2, first_name="Test")]
+        app.selection_trees = {category: Mock() for category in ("all", "groups", "private", "contacts")}
+        for tree in app.selection_trees.values():
+            tree.get_children.return_value = ()
+        app._populate_selection()
+        group_tags = [call.kwargs["tags"] for call in app.selection_trees["groups"].insert.call_args_list]
+        self.assertEqual(group_tags, [("even",), ("odd",)])
+        all_tags = [call.kwargs["tags"] for call in app.selection_trees["all"].insert.call_args_list]
+        self.assertEqual(all_tags, [("even",), ("odd",), ("even",)])
+
     async def test_confirmation_submits_original_snapshot(self):
         app = self.selected_app()
         app._account_display = lambda account: "Demo"
@@ -605,7 +621,9 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["success"]), 1)
         self.assertIn("disconnect failed", result["disconnect_error"])
         self.assertTrue(client.session.closed)
-        self.assertIn(client, app.clients)
+        # A failed release stays retryable instead of blocking later connects.
+        self.assertNotIn(client, app.clients)
+        self.assertIn(client, app.pending_release)
 
     async def test_rpc_failure_continues_to_next_item(self):
         app = make_app(FakeClient([RuntimeError("denied"), SimpleNamespace(offset=0)]))
@@ -722,7 +740,9 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         result = await app._logout_account(account, Path("unused"), None)
         self.assertIn("disconnect failed", result["disconnect_error"])
         app._delete_session_files.assert_not_awaited()
-        self.assertIn(client, app.clients)
+        self.assertNotIn(client, app.clients)
+        self.assertIn(client, app.pending_release)
+        # The retry path releases the retained client without a second logout.
         client.disconnect_error = None
         result = await app._logout_account(account, Path("unused"), None)
         self.assertTrue(result["deleted"])
@@ -830,6 +850,40 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["deleted"])
         self.assertEqual(len(client.requests), 1)
         self.assertEqual(len(replacement.requests), 1)
+
+    async def test_pending_release_is_retried_on_next_prepare(self):
+        previous = FakeClient(disconnect_error=RuntimeError("disconnect failed"))
+        app = make_app(previous)
+        self.assertIn("disconnect failed", await app._release_client(previous))
+        self.assertIn(previous, app.pending_release)
+        self.assertNotIn(previous, app.clients)
+        previous.disconnect_error = None
+        replacement = FakeClient()
+        with patch.object(accounts, "TelegramClient", return_value=replacement):
+            await app._prepare(1, "hash", Path("unused"), allow_authentication=False)
+        self.assertTrue(previous.session.closed)
+        self.assertNotIn(previous, app.pending_release)
+        self.assertEqual(previous.requests, [])
+        self.assertIs(app.client, replacement)
+        await app._release_client(replacement)
+
+    async def test_unreleased_session_reports_retryable_error(self):
+        previous = FakeClient(disconnect_error=RuntimeError("disconnect failed"))
+        app = make_app(previous)
+        with patch.object(accounts, "TelegramClient") as factory, self.assertRaises(RuntimeError) as error:
+            await app._prepare(1, "hash", Path("unused"), allow_authentication=False)
+        factory.assert_not_called()
+        self.assertIn("disconnect failed", str(error.exception))
+        self.assertIn(previous, app.pending_release)
+
+    async def test_new_account_duplicate_check_tolerates_legacy_entries(self):
+        app = make_app()
+        app.accounts = [{"session": "sessions/legacy", "label": "Legacy", "user_id": "99"}]
+        app._account_connected = Mock()
+        account = {"id": "new", "session": "sessions/new", "label": "New"}
+        app._new_account_connected(account, {"user_id": 42})
+        self.assertIn(account, app.accounts)
+        app._account_connected.assert_called_once_with(account, {"user_id": 42})
 
 
 class SessionStatusTests(unittest.TestCase):
@@ -1088,6 +1142,117 @@ class InterfaceLifecycleTests(unittest.TestCase):
             app_module.main()
         instance.close.assert_called_once()
         self.root.destroy()
+
+    def test_main_still_releases_mutex_and_loop_thread_when_shutdown_fails(self):
+        self.root.mainloop = Mock()
+        instance = Mock(acquired=True)
+
+        async def failing_shutdown():
+            raise RuntimeError("session release failed")
+
+        self.app._shutdown_background = failing_shutdown
+        observed = {}
+
+        def release_guard():
+            observed["loop_closed"] = self.app.loop_closed.is_set()
+            observed["thread_alive"] = self.app.loop_thread.is_alive()
+
+        instance.close.side_effect = release_guard
+        with patch.object(app_module, "SingleInstance", return_value=instance), patch.object(app_module.tk, "Tk", return_value=self.root), patch.object(app_module, "CleanupApp", return_value=self.app):
+            app_module.main()
+        instance.close.assert_called_once()
+        self.assertTrue(observed["loop_closed"])
+        self.assertFalse(observed["thread_alive"])
+        self.root.destroy()
+
+    def test_main_times_out_without_leaving_the_mutex_early(self):
+        self.root.mainloop = Mock()
+        instance = Mock(acquired=True)
+
+        async def slow_shutdown():
+            await asyncio.Event().wait()
+
+        self.app._shutdown_background = slow_shutdown
+        with patch.object(app_module, "SingleInstance", return_value=instance), patch.object(app_module, "SHUTDOWN_TIMEOUT", 0.05), patch.object(app_module.tk, "Tk", return_value=self.root), patch.object(app_module, "CleanupApp", return_value=self.app):
+            app_module.main()
+        instance.close.assert_called_once()
+        self.assertTrue(self.app.loop_closed.is_set())
+        self.assertFalse(self.app.loop_thread.is_alive())
+        self.root.destroy()
+
+    def test_submit_reports_failing_success_callback_instead_of_escaping_tk(self):
+        client = FakeClient()
+        app = make_app(client)
+        app.root = FakeRoot()
+        app.ui_requests = queue.Queue()
+        app.loop = asyncio.new_event_loop()
+        app.loop_ready = threading.Event()
+        app.loop_closed = threading.Event()
+        app.async_tasks = set()
+        app.active_futures = set()
+        app.busy = False
+        app.session_issues = {}
+        app.connected = False
+        app.preview_loaded = False
+        app.selection_rows = {}
+        app.execute_button = Mock()
+        app.stop_button = Mock()
+        app.account_combo = FakeWidget()
+        app.api_id_entry = FakeWidget()
+        app.api_hash_entry = FakeWidget()
+        for name in ("login_button", "add_button", "logout_button"):
+            setattr(app, name, FakeWidget())
+        for name in ("status_text", "account_text", "group_count", "dialog_count", "contact_count", "selected_account"):
+            setattr(app, name, FakeVariable())
+        app._selected_account = Mock(return_value=None)
+        app._update_account_buttons = Mock()
+        app.loop_thread = threading.Thread(target=app._run_event_loop, daemon=True)
+        app.loop_thread.start()
+        app.loop_ready.wait()
+        try:
+            def broken(_result):
+                raise KeyError("legacy account entry")
+
+            async def ready():
+                return "result"
+
+            with patch.object(background.messagebox, "showerror"):
+                app._submit(ready(), broken, "添加账号")
+                app.busy = True
+                deadline = time.monotonic() + 3
+                while app.busy and time.monotonic() < deadline:
+                    app.root.update()
+                    time.sleep(0.005)
+            self.assertFalse(app.busy)
+            self.assertIn("失败", app.status_text.get())
+        finally:
+            app.closing = False
+            app._on_close()
+            deadline = time.monotonic() + 3
+            while not app.loop_closed.is_set() and time.monotonic() < deadline:
+                app.root.update()
+                time.sleep(0.005)
+
+    def test_busy_toggle_keeps_contextual_status_when_omitted(self):
+        app = make_app()
+        app.busy = False
+        app.connected = False
+        app.root = FakeRoot()
+        app.ui_requests = queue.Queue()
+        app.execute_button = Mock()
+        app.stop_button = Mock()
+        app.account_combo = FakeWidget()
+        app.api_id_entry = FakeWidget()
+        app.api_hash_entry = FakeWidget()
+        for name in ("login_button", "add_button", "logout_button"):
+            setattr(app, name, FakeWidget())
+        app.status_text = FakeVariable("正在停止清理并释放会话……")
+        app._update_account_buttons = Mock()
+        app._update_execute_state = Mock()
+        app._set_busy(False)
+        self.assertEqual(app.status_text.get(), "正在停止清理并释放会话……")
+        app._set_busy(False, "就绪")
+        self.assertEqual(app.status_text.get(), "就绪")
 
 
 if __name__ == "__main__":

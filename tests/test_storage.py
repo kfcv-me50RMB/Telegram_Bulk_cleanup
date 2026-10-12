@@ -97,3 +97,25 @@ class ConfigTests(unittest.TestCase):
         with patch.object(storage.messagebox, 'showwarning'):
             self.load(self.app())
         self.assertFalse(self.path.exists())
+
+    def test_missing_keys_fill_placeholders_without_literal_none(self):
+        write_config(self.path, {'accounts': []})
+        stored = read_config(self.path)
+        self.assertEqual(stored['api_id'], '')
+        self.assertEqual(stored['api_hash'], '')
+        self.assertIsNone(stored['selected_account'])
+        app = self.app()
+        app._selected_account_id = Mock(return_value=None)
+        with patch.object(app.api_id, 'set') as set_api_id:
+            self.load(app)
+        set_api_id.assert_called_once_with('')
+
+    def test_stored_none_credentials_never_become_text_none(self):
+        write_config(self.path, {'api_id': None, 'api_hash': None, 'accounts': []})
+        self.assertEqual(read_config(self.path)['api_id'], '')
+        self.assertEqual(read_config(self.path)['api_hash'], '')
+        app = self.app()
+        with patch.object(app.api_id, 'set') as set_api_id, patch.object(app.api_hash, 'set') as set_api_hash:
+            self.load(app)
+        set_api_id.assert_called_once_with('')
+        set_api_hash.assert_called_once_with('')

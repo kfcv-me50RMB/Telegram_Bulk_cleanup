@@ -86,6 +86,8 @@ class UiMixin:
 
         def show():
             state["timer"] = None
+            if getattr(self, "closing", False) or not self.root.winfo_exists():
+                return
             account = self._selected_account()
             if not account:
                 return
@@ -341,9 +343,10 @@ class UiMixin:
         status_label = ttk.Label(status, textvariable=self.status_text, width=1, anchor="w")
         status_label.grid(row=0, column=1, sticky="ew")
 
-    def _set_busy(self, busy, status):
+    def _set_busy(self, busy, status=None):
         self.busy = busy
-        self.status_text.set(status)
+        if status is not None:
+            self.status_text.set(status)
         widget_state = "disabled" if busy else "normal"
         readonly_state = "disabled" if busy else "readonly"
         for widget in (
@@ -357,12 +360,15 @@ class UiMixin:
         self.api_hash_entry.configure(state=credentials_state)
         self.account_combo.configure(state=readonly_state)
         self._update_account_buttons()
-        for button in getattr(self, "selection_buttons", []):
-            button.configure(state="normal" if self._selection_available() else "disabled")
-        for tree in getattr(self, "selection_trees", {}).values():
-            tree.state(["!disabled"] if self._selection_available() else ["disabled"])
         if busy:
+            # Selection must stay frozen while a task runs.
             self.execute_button.configure(state="disabled")
+            for button in getattr(self, "selection_buttons", []):
+                button.configure(state="disabled")
+            for tree in getattr(self, "selection_trees", {}).values():
+                tree.state(["disabled"])
+        else:
+            self._update_execute_state()
 
     def _show_details(self, title, summary, result):
         window = tk.Toplevel(self.root)

@@ -2,6 +2,7 @@ import asyncio
 import queue
 from concurrent.futures import Future
 from tkinter import messagebox
+from .constants import UI_POLL_INTERVAL_MS
 from .models import QRLoginCancelled
 
 
@@ -47,6 +48,10 @@ class BackgroundMixin:
         self.ui_requests.put((function, result))
         return await asyncio.wrap_future(result)
 
+    def _post_ui(self, function):
+        """Fire-and-forget UI work from the event loop thread."""
+        self.ui_requests.put((function, Future()))
+
     def _log(self, text):
         if self.closing:
             return
@@ -56,7 +61,7 @@ class BackgroundMixin:
             self.log.see("end")
             self.log.configure(state="disabled")
 
-        self.ui_requests.put((append, Future()))
+        self._post_ui(append)
 
     def _submit(self, coroutine, on_success, operation_name, on_error=None):
         async def tracked_operation():
@@ -73,12 +78,19 @@ class BackgroundMixin:
         def check_result():
             if self.closing:
                 self.active_futures.discard(future)
+                if future.done() and not future.cancelled():
+                    future.exception()
+                return
+            if not self.root.winfo_exists():
+                self.active_futures.discard(future)
+                if future.done() and not future.cancelled():
+                    future.exception()
                 return
             if not future.done():
-                self.root.after(100, check_result)
+                self.root.after(UI_POLL_INTERVAL_MS, check_result)
                 return
             self.active_futures.discard(future)
-            self._set_busy(False, "就绪")
+            self._set_busy(False)
             try:
                 result = future.result()
             except QRLoginCancelled:
@@ -87,7 +99,7 @@ class BackgroundMixin:
                 self.status_text.set("扫码登录已取消；已授权或状态待核对的账号会保留，请重新连接核对。")
                 self._log("扫码登录已取消，连接已释放。")
             except Exception as exc:
-                if operation_name in ("登录账号", "切换账号", "添加账号", "断开账号"):
+                if operation_name in ("登录账号", "切换账号", "添加账号", "退出登录"):
                     self.connected = False
                     self._clear_preview()
                 if on_error and on_error(exc):
@@ -96,9 +108,16 @@ class BackgroundMixin:
                 self._log(f"{operation_name}失败：{exc}")
                 messagebox.showerror(f"{operation_name}失败", str(exc))
             else:
-                on_success(result)
+                try:
+                    on_success(result)
+                except Exception as exc:
+                    # A failing result handler must not escape into Tk and
+                    # leave the task state stuck on busy.
+                    self.status_text.set(f"{operation_name}结果处理失败")
+                    self._log(f"{operation_name}结果处理失败：{exc}")
+                    messagebox.showerror(f"{operation_name}失败", str(exc))
 
-        self.root.after(100, check_result)
+        self.root.after(UI_POLL_INTERVAL_MS, check_result)
 
     @staticmethod
     async def _timed(awaitable, seconds, label):

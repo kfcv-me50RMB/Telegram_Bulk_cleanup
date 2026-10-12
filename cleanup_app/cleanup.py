@@ -34,6 +34,10 @@ class CleanupMixin:
         self._reset_selection()
         categories = (("private", self.private_users), ("groups", self.groups), ("contacts", self.contacts))
         for category, items in categories:
+            tree = self.selection_trees[category]
+            all_tree = self.selection_trees.get("all")
+            row_index = len(tree.get_children())
+            all_index = len(all_tree.get_children()) if all_tree is not None else 0
             for item in items:
                 entity = item[0].entity if category == "groups" else item.entity if category == "private" else item
                 if isinstance(entity, User) and entity.is_self:
@@ -44,13 +48,13 @@ class CleanupMixin:
                     continue
                 self.selection_rows[key] = item
                 name = getattr(entity, "title", None) or " ".join(v for v in (getattr(entity, "first_name", None), getattr(entity, "last_name", None)) if v) or str(entity.id)
-                tree = self.selection_trees[category]
                 values = ("☐", name, "@" + entity.username if getattr(entity, "username", None) else "—", str(peer_id))
-                tree.insert("", "end", iid=str(peer_id), tags=("odd" if len(tree.get_children()) % 2 else "even",), values=values)
-                all_tree = self.selection_trees.get("all")
+                tree.insert("", "end", iid=str(peer_id), tags=("odd" if row_index % 2 else "even",), values=values)
+                row_index += 1
                 if all_tree is not None:
                     kind = {"private": "用户私聊", "groups": "群组/频道", "contacts": "联系人"}[category]
-                    all_tree.insert("", "end", iid=f"{category}:{peer_id}", tags=("odd" if len(all_tree.get_children()) % 2 else "even",), values=(values[0], kind, *values[1:]))
+                    all_tree.insert("", "end", iid=f"{category}:{peer_id}", tags=("odd" if all_index % 2 else "even",), values=(values[0], kind, *values[1:]))
+                    all_index += 1
         self._refresh_selection()
 
     def _refresh_selection(self):
@@ -207,7 +211,7 @@ class CleanupMixin:
 
     def _progress(self, text):
         if not self.closing:
-            self.ui_requests.put((lambda: self.status_text.set(text), Future()))
+            self._post_ui(lambda: self.status_text.set(text))
 
     async def _perform(self, label, operation_factory, flood_state):
         while True:
