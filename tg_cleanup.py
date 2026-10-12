@@ -11,14 +11,17 @@ from cleanup_app.constants import SHUTDOWN_TIMEOUT
 from cleanup_app.dialogs import LoginDialog, LoginMethodDialog, QRLoginDialog
 from cleanup_app.models import CleanupSelection, CleanupStopped, StoredSessionInvalidError, QRLoginCancelled
 from cleanup_app.instance import SingleInstance, enable_dpi_awareness
+from cleanup_app.icons import apply_window_icon, set_taskbar_identity
 
 
 def main():
     # Must precede the first Tk window so text stays crisp on scaled displays.
     enable_dpi_awareness()
+    set_taskbar_identity()
     instance = SingleInstance()
     if not instance.acquired:
         root = tk.Tk()
+        apply_window_icon(root)
         root.withdraw()
         messagebox.showwarning("程序已运行", "已经有一个 Telegram 批量清理窗口正在运行。")
         root.destroy()

@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.append(str(ROOT / ".venv" / "Lib" / "site-packages"))
 import tg_cleanup as module
+from cleanup_app.icons import apply_window_icon, set_taskbar_identity
 from telethon.tl.types import Chat, User
 
 
@@ -65,6 +66,7 @@ def capture_window(window, path):
 def preview_qr(output_dir=None):
     for scale in (1, 1.25, 1.5):
         root = module.tk.Tk()
+        apply_window_icon(root)
         root.geometry("1000x760+20+20")
         root.tk.call("tk", "scaling", 96 / 72 * scale)
         app = module.CleanupApp.__new__(module.CleanupApp)
@@ -102,6 +104,7 @@ def preview_qr(output_dir=None):
 def preview_login(output_dir=None):
     for scale in (1, 1.25, 1.5):
         root = module.tk.Tk()
+        apply_window_icon(root)
         root.geometry("1000x760+20+20")
         root.tk.call("tk", "scaling", 96 / 72 * scale)
         app = module.CleanupApp.__new__(module.CleanupApp)
@@ -165,6 +168,7 @@ def preview(output_dir=None):
     screenshots = []
     for scale, width, height in ((1, 1000, 760), (1, 860, 640), (1, 1250, 950), (1.25, 1000, 760), (1.5, 1000, 760)):
         root = module.tk.Tk()
+        apply_window_icon(root)
         root.title("离线界面预览 · 模拟数据")
         root.geometry(f"{width}x{height}+40+40")
         root.minsize(860, 640)
@@ -383,6 +387,7 @@ def preview(output_dir=None):
 
 
 if __name__ == "__main__":
+    set_taskbar_identity()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()

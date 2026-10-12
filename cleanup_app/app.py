@@ -9,6 +9,7 @@ from .storage import StorageMixin
 from .accounts import AccountsMixin
 from .cleanup import CleanupMixin
 from .background import BackgroundMixin
+from .icons import apply_window_icon
 
 
 class CleanupApp(UiMixin, StorageMixin, AccountsMixin, CleanupMixin, BackgroundMixin):
@@ -16,6 +17,7 @@ class CleanupApp(UiMixin, StorageMixin, AccountsMixin, CleanupMixin, BackgroundM
 
     def __init__(self, root):
         self.root = root
+        apply_window_icon(root)
         self.root.title("Telegram 批量清理")
         # Window sizes are in real pixels; scale them so a DPI-aware window
         # occupies the same apparent area it did before, and never exceed the

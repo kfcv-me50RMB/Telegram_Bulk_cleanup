@@ -198,6 +198,10 @@ python -m venv .venv
 
 重新打包：安装 Python 后执行 `build_exe.bat`。脚本会创建独立的 `.build-venv` 环境并安装固定的应用依赖与 PyInstaller，然后生成 EXE。首次打包需要联网下载依赖。
 
+应用图标采用蓝色纸飞机与清理闪光，原稿位于 `assets/app_icon.png`，Windows 多尺寸图标位于 `assets/app_icon.ico`（16、24、32、48、64、128、256 像素）。打包脚本同时嵌入 EXE 图标和窗口使用的图标资源；源码启动时也使用同一图标，并设置固定任务栏标识。替换图标后需重新打包。Pillow 仅用于将 PNG 转换为 ICO，不是运行依赖。
+
+如果已固定的任务栏快捷方式仍显示旧图标，请取消固定旧快捷方式，再从新 EXE 重新固定。
+
 ## 代码结构
 
 `tg_cleanup.py` 保留启动入口及应用类、弹窗类和异常类型的兼容导出。`cleanup_app/` 按职责组织，应用类通过 Mixin 组合现有方法，共享状态统一在 `app.py` 初始化。
